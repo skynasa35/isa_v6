@@ -1,0 +1,6 @@
+{
+  "name": "Intelligent Seismic Analyzer v6",
+  "description": "A web-based tool to analyze, visualize, and report on seismic survey data from VAPS vibration files for comprehensive operational intelligence.",
+  "requestFramePermissions": [],
+  "prompt": ""
+}

@@ -1,0 +1,3823 @@
+
+intelligent-seismic-analyzer/
+├── App.tsx
+│   import React, { useState, useEffect, useCallback, useRef } from 'react';
+│   import { FilePlus, Trash2, FileUp, Languages, Info, Map as MapIcon, LineChart, Database, FileBarChart2 } from 'lucide-react';
+│   
+│   import { THEMES, DEFAULT_THEME } from './constants';
+│   import { VibrationAnalysisResult, SummaryData, VibrationRecord } from './types';
+│   import { parseAndAnalyzeVibrationData, generateSummary, generateExportText } from './services/analyzer';
+│   
+│   import WelcomeScreen from './components/WelcomeScreen';
+│   import AnalysisTabs from './components/AnalysisTabs';
+│   import AboutModal from './components/AboutModal';
+│   import SummaryModal from './components/SummaryModal';
+│   import MapModal from './components/MapModal';
+│   import { useI18n } from './hooks/useI18n';
+│   import ThemeSwitcher from './components/ThemeSwitcher';
+│   
+│   interface AppFile {
+│     name: string;
+│     content: string;
+│     type: 'vaps' | 'unknown';
+│   }
+│   
+│   type AppMode = 'welcome' | 'vaps';
+│   
+│   export default function App() {
+│     const [themeName, setThemeName] = useState(DEFAULT_THEME);
+│     const theme = THEMES[themeName as keyof typeof THEMES] || THEMES[DEFAULT_THEME];
+│     
+│     const [files, setFiles] = useState<AppFile[]>([]);
+│     const [selectedFileName, setSelectedFileName] = useState<string | null>(null);
+│     const [mode, setMode] = useState<AppMode>('welcome');
+│     
+│     // VAPS state
+│     const [analysisResult, setAnalysisResult] = useState<VibrationAnalysisResult | null>(null);
+│     const [rawRecords, setRawRecords] = useState<VibrationRecord[]>([]);
+│     const [summaryData, setSummaryData] = useState<SummaryData | null>(null);
+│   
+│     const [isAboutModalOpen, setAboutModalOpen] = useState(false);
+│     const [isSummaryModalOpen, setSummaryModalOpen] = useState(false);
+│     const [isMapModalOpen, setMapModalOpen] = useState(false);
+│     
+│     const [isDragging, setIsDragging] = useState(false);
+│     
+│     const fileInputRef = useRef<HTMLInputElement>(null);
+│     const { language, setLanguage, t } = useI18n();
+│   
+│     useEffect(() => {
+│       const root = document.documentElement;
+│       Object.entries(theme).forEach(([key, value]) => {
+│         const cssVar = `--color-${key.replace(/_/g, '-')}`;
+│         root.style.setProperty(cssVar, value);
+│       });
+│     }, [theme]);
+│   
+│     const resetVapsState = () => {
+│       setAnalysisResult(null);
+│       setRawRecords([]);
+│       setSummaryData(null);
+│     };
+│   
+│     const analyzeFileContent = useCallback((content: string, fileName: string, type: AppFile['type']) => {
+│         if (type === 'vaps') {
+│             resetVapsState();
+│             try {
+│               const { result, rawRecords: parsedRecords, totalLines, conflictedShotDetails } = parseAndAnalyzeVibrationData(content);
+│               if (!result) throw new Error(t('emptyDataBody'));
+│               setAnalysisResult(result);
+│               setRawRecords(parsedRecords);
+│               const newSummary = generateSummary(result, fileName, totalLines, conflictedShotDetails);
+│               setSummaryData(newSummary);
+│               setMode('vaps');
+│               setSelectedFileName(fileName);
+│             } catch (error) {
+│               console.error("Failed to parse file:", error);
+│               alert(`${t('analysisErrorBody', { error: String(error) })}`);
+│             }
+│         }
+│     }, [t]);
+│     
+│     const addFiles = useCallback((newFiles: AppFile[]) => {
+│       setFiles(currentFiles => {
+│           const uniqueNewFiles = newFiles.filter(nf => !currentFiles.some(f => f.name === nf.name));
+│           if (uniqueNewFiles.length > 0) {
+│               const firstNewFile = uniqueNewFiles[0];
+│               if (firstNewFile.type === 'vaps') {
+│                   analyzeFileContent(firstNewFile.content, firstNewFile.name, firstNewFile.type);
+│               }
+│               return [...currentFiles, ...uniqueNewFiles];
+│           }
+│           if (newFiles.length > 0 && !uniqueNewFiles.length) {
+│             const reselectedFile = newFiles[0];
+│             if (reselectedFile.type === 'vaps') {
+│                analyzeFileContent(reselectedFile.content, reselectedFile.name, reselectedFile.type);
+│             }
+│           }
+│           return currentFiles;
+│       });
+│     }, [analyzeFileContent]);
+│   
+│     const handleFileSelect = (fileName: string) => {
+│       const file = files.find(f => f.name === fileName);
+│       if (file && fileName !== selectedFileName && file.type === 'vaps') {
+│         analyzeFileContent(file.content, file.name, file.type);
+│       }
+│     };
+│     
+│     const classifyFile = (file: File): AppFile['type'] => {
+│         const lowerName = file.name.toLowerCase();
+│         if (lowerName.endsWith('.txt')) {
+│           return 'vaps';
+│         }
+│         if (!lowerName.includes('.')) {
+│           return 'vaps';
+│         }
+│         return 'unknown';
+│     };
+│   
+│     const handleFileUpload = (event: React.ChangeEvent<HTMLInputElement>) => {
+│       const uploadedFiles = event.target.files;
+│       if (!uploadedFiles) return;
+│   
+│       const filePromises = Array.from(uploadedFiles).map((file: File) => new Promise<AppFile>((resolve, reject) => {
+│           const type = classifyFile(file);
+│           if (type === 'unknown') {
+│               resolve({ name: file.name, content: '', type });
+│               return;
+│           }
+│           const reader = new FileReader();
+│           reader.onload = e => resolve({ name: file.name, content: e.target?.result as string, type });
+│           reader.onerror = e => reject(e);
+│           reader.readAsText(file);
+│       }));
+│   
+│       Promise.all(filePromises).then(addFiles);
+│     };
+│     
+│     const clearFileList = () => {
+│       setFiles([]);
+│       setSelectedFileName(null);
+│       resetVapsState();
+│       setMode('welcome');
+│     };
+│   
+│     const exportVapsTxt = () => {
+│       if (!summaryData) return;
+│       const textContent = generateExportText(summaryData);
+│       const blob = new Blob([textContent], { type: 'text/plain;charset=utf-8' });
+│       const url = URL.createObjectURL(blob);
+│       const link = document.createElement('a');
+│       link.href = url;
+│       link.download = `Summary_${summaryData.source_file}`;
+│       link.click();
+│       URL.revokeObjectURL(url);
+│     };
+│   
+│     const handleOpenMap = () => {
+│       if (rawRecords.some(r => r.gpgga && !r.gpgga.includes('$ERROR'))) {
+│           setMapModalOpen(true);
+│       } else {
+│           alert(t('noGpsData'));
+│       }
+│     };
+│   
+│     const handleDragOver = (e: React.DragEvent) => { e.preventDefault(); e.stopPropagation(); };
+│     const handleDragEnter = (e: React.DragEvent) => { e.preventDefault(); e.stopPropagation(); setIsDragging(true);};
+│     const handleDragLeave = (e: React.DragEvent) => { e.preventDefault(); e.stopPropagation(); setIsDragging(false);};
+│   
+│     const handleDrop = async (e: React.DragEvent) => {
+│       e.preventDefault();
+│       e.stopPropagation();
+│       setIsDragging(false);
+│       
+│       const droppedFiles = Array.from(e.dataTransfer.files);
+│       if (droppedFiles.length === 0) return;
+│   
+│       const filePromises = droppedFiles.map((file: File) => new Promise<AppFile>((resolve, reject) => {
+│           const type = classifyFile(file);
+│           if (type === 'unknown') {
+│               resolve({ name: file.name, content: '', type });
+│               return;
+│           }
+│           const reader = new FileReader();
+│           reader.onload = e => resolve({ name: file.name, content: e.target?.result as string, type });
+│           reader.onerror = e => reject(e);
+│           reader.readAsText(file);
+│       }));
+│   
+│       Promise.all(filePromises).then(addFiles);
+│     };
+│   
+│     const toggleLanguage = () => setLanguage(language === 'en' ? 'fr' : 'en');
+│   
+│     return (
+│       <div 
+│           className="flex flex-col h-screen font-sans text-sm bg-bg-primary text-text-primary overflow-hidden"
+│           onDragEnter={handleDragEnter}
+│           onDragLeave={handleDragLeave}
+│           onDragOver={handleDragOver}
+│           onDrop={handleDrop}
+│       >
+│         <input type="file" multiple accept=".txt" ref={fileInputRef} onChange={handleFileUpload} className="hidden" />
+│         
+│         {isDragging && (
+│           <div className="absolute inset-0 bg-bg-primary/80 backdrop-blur-sm z-50 flex flex-col justify-center items-center pointer-events-none">
+│             <FileUp size={64} className="text-accent-primary mb-4" />
+│             <p className="text-2xl font-bold">{t('dropFilesHint')}</p>
+│           </div>
+│         )}
+│   
+│         <header className="flex-shrink-0 bg-bg-primary border-b border-border-color flex items-center justify-between p-3 z-30">
+│           <div className="flex items-center gap-4">
+│             <img src="/assets/3d.png" alt="Logo" className="h-10 w-10" />
+│             <div>
+│               <h1 className="text-lg font-bold text-text-primary">{t('vibrationAnalyzer')}</h1>
+│               <p className="text-xs text-text-secondary italic -mt-1">{t('intelligentMonitoring')}</p>
+│             </div>
+│           </div>
+│           <div className="flex items-center gap-2">
+│               <button onClick={() => fileInputRef.current?.click()} className="flex items-center gap-2 bg-accent-primary text-white font-semibold py-2 px-4 rounded-md hover:opacity-90 transition-opacity">
+│                 <FilePlus size={16} />
+│                 <span>{t('addFiles')}</span>
+│               </button>
+│               <button onClick={clearFileList} disabled={files.length === 0} className="flex items-center gap-2 bg-bg-tertiary text-text-primary font-semibold py-2 px-4 rounded-md hover:bg-border-color disabled:opacity-50 disabled:cursor-not-allowed transition-colors">
+│                 <Trash2 size={16} />
+│               </button>
+│               <div className="w-px h-6 bg-border-color mx-2"></div>
+│               <ThemeSwitcher currentThemeName={themeName} setThemeName={setThemeName} />
+│               <button onClick={toggleLanguage} className="p-2 rounded-md hover:bg-bg-tertiary transition-colors" title="Change Language">
+│                 <Languages size={18} className="text-text-secondary"/>
+│               </button>
+│               <button onClick={() => setAboutModalOpen(true)} className="p-2 rounded-md hover:bg-bg-tertiary transition-colors" title={t('about')}>
+│                 <Info size={18} className="text-text-secondary"/>
+│               </button>
+│           </div>
+│         </header>
+│         
+│         <div className="flex flex-grow overflow-hidden">
+│           <main className="flex-grow bg-bg-secondary p-4 overflow-auto">
+│               {mode === 'welcome' && <WelcomeScreen theme={theme} />}
+│               {mode === 'vaps' && analysisResult && <AnalysisTabs analysisData={analysisResult} theme={theme} />}
+│           </main>
+│   
+│           {files.length > 0 && (
+│             <aside className="w-72 flex-shrink-0 bg-bg-primary border-l border-border-color flex flex-col p-4">
+│               <h2 className="text-lg font-semibold mb-3 border-b border-border-color pb-2 flex items-center gap-2"><Database size={18} /> Loaded Files</h2>
+│               <div className="flex-grow overflow-y-auto mb-4 -mr-2 pr-2">
+│                 {files.map(file => {
+│                   const isSelected = selectedFileName === file.name;
+│                   const isActionable = file.type === 'vaps';
+│                   return (
+│                       <div 
+│                         key={file.name}
+│                         onClick={() => isActionable && handleFileSelect(file.name)}
+│                         className={`flex items-center gap-3 p-3 rounded-md text-text-primary transition-colors truncate ${!isActionable ? 'text-text-secondary italic cursor-not-allowed' : isSelected ? 'bg-accent-primary/20 text-accent-primary' : 'hover:bg-bg-tertiary cursor-pointer'}`}
+│                       >
+│                         <FileBarChart2 size={18} className="flex-shrink-0" />
+│                         <span className="truncate font-semibold">{file.name}</span>
+│                       </div>
+│                   );
+│                 })}
+│               </div>
+│               
+│               <div className="flex-shrink-0 mt-auto pt-4 border-t border-border-color space-y-2">
+│                  <h3 className="font-semibold text-text-secondary text-sm px-1 mb-2">Actions for {selectedFileName ? `"${selectedFileName}"` : 'selection'}</h3>
+│                  {mode === 'vaps' && (
+│                     <>
+│                       <ActionButton icon={LineChart} text={t('showSummary')} onClick={() => setSummaryModalOpen(true)} disabled={!summaryData} />
+│                       <ActionButton icon={MapIcon} text={t('mapView')} onClick={handleOpenMap} disabled={rawRecords.length === 0} />
+│                       <ActionButton icon={FileUp} text={t('exportTxt')} onClick={exportVapsTxt} disabled={!summaryData} />
+│                     </>
+│                  )}
+│               </div>
+│             </aside>
+│           )}
+│         </div>
+│   
+│         <AboutModal isOpen={isAboutModalOpen} onClose={() => setAboutModalOpen(false)} theme={theme} />
+│         {mode === 'vaps' && <SummaryModal isOpen={isSummaryModalOpen} onClose={() => setSummaryModalOpen(false)} summary={summaryData} rawRecords={rawRecords} theme={theme} />}
+│         <MapModal isOpen={isMapModalOpen} onClose={() => setMapModalOpen(false)} rawRecords={rawRecords} theme={theme} />
+│       </div>
+│     );
+│   }
+│   
+│   const ActionButton: React.FC<React.ButtonHTMLAttributes<HTMLButtonElement> & { icon: React.ElementType; text: string; }> = ({ icon: Icon, text, ...props }) => {
+│     return (
+│       <button {...props} className="w-full flex items-center gap-3 p-3 rounded-md text-text-primary bg-bg-tertiary hover:bg-border-color transition-colors disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:bg-bg-tertiary">
+│         <Icon size={18} className="text-accent-primary" />
+│         <span className="font-semibold">{text}</span>
+│       </button>
+│     );
+│   };
+├── MapModal.tsx
+│   // This file is intentionally left empty.
+│   // It was a duplicate of components/MapModal.tsx and was causing build errors.
+│   // The correct component is imported from the components/ directory.
+├── README.md
+│   # Run and deploy your AI Studio app
+│   
+│   This contains everything you need to run your app locally.
+│   
+│   ## Run Locally
+│   
+│   **Prerequisites:**  Node.js
+│   
+│   
+│   1. Install dependencies:
+│      `npm install`
+│   2. Set the `GEMINI_API_KEY` in [.env.local](.env.local) to your Gemini API key
+│   3. Run the app:
+│      `npm run dev`
+├── components/
+│   ├── AIInsightModal.tsx
+│   │   import React, { useState, useEffect } from 'react';
+│   │   import { X, BrainCircuit, Loader2 } from 'lucide-react';
+│   │   import { ThemeColors, VibrationRecord } from '../types';
+│   │   import { useI18n } from '../hooks/useI18n';
+│   │   import { diagnoseVibratorIssues } from '../services/geminiService';
+│   │   
+│   │   interface AIInsightModalProps {
+│   │     isOpen: boolean;
+│   │     onClose: () => void;
+│   │     theme: ThemeColors;
+│   │     vibratorId: string;
+│   │     records: VibrationRecord[];
+│   │   }
+│   │   
+│   │   const AIInsightModal: React.FC<AIInsightModalProps> = ({ isOpen, onClose, theme, vibratorId, records }) => {
+│   │     const { t, language } = useI18n();
+│   │     const [isLoading, setIsLoading] = useState(true);
+│   │     const [insight, setInsight] = useState<string | null>(null);
+│   │     const [error, setError] = useState<string | null>(null);
+│   │   
+│   │     useEffect(() => {
+│   │       if (isOpen && vibratorId && records.length > 0) {
+│   │         const fetchInsight = async () => {
+│   │           setIsLoading(true);
+│   │           setError(null);
+│   │           try {
+│   │             const result = await diagnoseVibratorIssues(records, vibratorId, language);
+│   │             if (result === "") {
+│   │                setInsight(t('noIssuesDetected'));
+│   │             } else {
+│   │                setInsight(result);
+│   │             }
+│   │           } catch (err) {
+│   │             console.error(err);
+│   │             setError(err instanceof Error ? err.message : t('aiApiError'));
+│   │           } finally {
+│   │             setIsLoading(false);
+│   │           }
+│   │         };
+│   │         fetchInsight();
+│   │       }
+│   │     }, [isOpen, vibratorId, records, t, language]);
+│   │   
+│   │     if (!isOpen) return null;
+│   │   
+│   │     return (
+│   │       <div className="fixed inset-0 bg-black bg-opacity-70 flex justify-center items-center z-[60] p-4 transition-opacity duration-300">
+│   │         <div 
+│   │           className="bg-bg-secondary/90 backdrop-blur-md text-text-primary rounded-lg shadow-2xl w-full max-w-lg border border-border-color flex flex-col transform transition-all duration-300 scale-95 opacity-0 animate-fade-in-scale"
+│   │         >
+│   │           <div className="flex justify-between items-center p-4 border-b border-border-color">
+│   │             <h2 className="text-xl font-bold text-accent-secondary flex items-center gap-2">
+│   │               <BrainCircuit size={22} />
+│   │               {`${t('aiDiagnosisTitle')} - ${vibratorId}`}
+│   │             </h2>
+│   │             <button onClick={onClose} className="text-text-secondary hover:text-text-primary transition-colors rounded-full p-1 focus:outline-none focus:ring-2 focus:ring-accent-primary">
+│   │               <X size={24} />
+│   │             </button>
+│   │           </div>
+│   │   
+│   │           <div className="p-6 flex-grow overflow-y-auto min-h-[150px] bg-bg-primary/50">
+│   │             {isLoading && (
+│   │               <div className="flex flex-col items-center justify-center h-full text-text-secondary">
+│   │                 <Loader2 size={32} className="animate-spin mb-4" />
+│   │                 <p>{t('fetchingDiagnosis')}</p>
+│   │               </div>
+│   │             )}
+│   │             {error && (
+│   │               <div className="text-center text-red-400">
+│   │                 <p>{error}</p>
+│   │               </div>
+│   │             )}
+│   │             {!isLoading && insight && (
+│   │               <div className="whitespace-pre-wrap font-sans leading-relaxed text-text-primary">
+│   │                 {insight.split('\n').map((line, index) => {
+│   │                   const isTitle = line.startsWith('Potential Problem:') || line.startsWith('Recommendation:') || line.startsWith('Problème potentiel:') || line.startsWith('Recommandation:');
+│   │                   return (
+│   │                     <p key={index} className={isTitle ? 'font-bold mt-2 text-accent-primary' : ''}>
+│   │                       {line}
+│   │                     </p>
+│   │                   )
+│   │                 })}
+│   │               </div>
+│   │             )}
+│   │           </div>
+│   │           
+│   │           <div className="flex-shrink-0 p-4 border-t border-border-color flex justify-end bg-bg-secondary rounded-b-lg">
+│   │                <button
+│   │                 onClick={onClose}
+│   │                 className="bg-accent-primary text-white font-bold py-2 px-8 rounded-md hover:opacity-90 transition-opacity"
+│   │               >
+│   │                 {t('close')}
+│   │               </button>
+│   │           </div>
+│   │         </div>
+│   │         <style>{`
+│   │           @keyframes fade-in-scale {
+│   │             from { opacity: 0; transform: scale(0.95); }
+│   │             to { opacity: 1; transform: scale(1); }
+│   │           }
+│   │           .animate-fade-in-scale {
+│   │             animation: fade-in-scale 0.3s ease-out forwards;
+│   │           }
+│   │         `}</style>
+│   │       </div>
+│   │     );
+│   │   };
+│   │   
+│   │   export default AIInsightModal;
+│   ├── AboutModal.tsx
+│   │   import React from 'react';
+│   │   import { X, Info, Mail, Phone, Code } from 'lucide-react';
+│   │   import { ThemeColors } from '../types';
+│   │   import { useI18n } from '../hooks/useI18n';
+│   │   
+│   │   interface AboutModalProps {
+│   │     isOpen: boolean;
+│   │     onClose: () => void;
+│   │     theme: ThemeColors;
+│   │   }
+│   │   
+│   │   const AboutModal: React.FC<AboutModalProps> = ({ isOpen, onClose, theme }) => {
+│   │     const { t } = useI18n();
+│   │     if (!isOpen) return null;
+│   │   
+│   │     return (
+│   │       <div className="fixed inset-0 bg-black bg-opacity-70 flex justify-center items-center z-50 p-4 transition-opacity duration-300">
+│   │         <div 
+│   │           className="bg-bg-tertiary/80 backdrop-blur-md text-text-primary rounded-lg shadow-2xl w-full max-w-4xl border border-border-color flex flex-col transform transition-all duration-300 scale-95 opacity-0 animate-fade-in-scale"
+│   │           style={{ height: 'auto', maxHeight: '90vh' }}
+│   │         >
+│   │           <div className="flex justify-between items-center p-4 border-b border-border-color flex-shrink-0">
+│   │             <h2 className="text-xl font-bold text-accent-primary flex items-center gap-2">
+│   │               <Info size={22} />
+│   │               {t('aboutTitle')}
+│   │             </h2>
+│   │             <button onClick={onClose} className="text-text-secondary hover:text-text-primary transition-colors rounded-full p-1 focus:outline-none focus:ring-2 focus:ring-accent-primary">
+│   │               <X size={24} />
+│   │             </button>
+│   │           </div>
+│   │   
+│   │           <div className="p-6 flex-grow overflow-y-auto">
+│   │             <div className="mb-8 p-4 bg-bg-primary rounded-lg border border-border-color">
+│   │               <div className="flex items-center justify-center gap-2 md:gap-4 flex-wrap">
+│   │                 <span className="bg-bg-secondary text-text-secondary font-mono text-sm px-3 py-1 rounded">{t('ddsi')}</span>
+│   │                 <span className="text-text-secondary font-bold text-lg">›</span>
+│   │                 <span className="bg-bg-secondary text-text-secondary font-mono text-sm px-3 py-1 rounded">{t('helpdesk')}</span>
+│   │                 <span className="text-text-secondary font-bold text-lg">›</span>
+│   │                 <span className="bg-accent-primary/20 text-accent-primary font-mono text-sm px-3 py-1 rounded-md shadow-sm">LEMMOUCHI</span>
+│   │               </div>
+│   │               <div className="mt-4 border-t border-border-color pt-4 flex flex-col md:flex-row items-center justify-center gap-x-6 gap-y-2 text-text-secondary font-mono text-sm">
+│   │                   <a href="mailto:a-lemmouchi@enageo.com" className="flex items-center gap-2 hover:text-accent-primary transition-colors">
+│   │                       <Mail size={14} />
+│   │                       <span>a-lemmouchi@enageo.com</span>
+│   │                   </a>
+│   │                   <div className="flex items-center gap-2">
+│   │                       <Phone size={14} />
+│   │                       <span>0561 65 03 36 / Ext. 2225</span>
+│   │                   </div>
+│   │               </div>
+│   │             </div>
+│   │   
+│   │             <div className="bg-bg-secondary p-6 rounded-md border border-border-color font-sans">
+│   │                <div className="space-y-4 text-text-primary text-base leading-relaxed">
+│   │                 <p>{t('about_p1')}</p>
+│   │                 <p>{t('about_p2')}</p>
+│   │                 <p>{t('about_p3')}</p>
+│   │                 <p>{t('about_p4')}</p>
+│   │               </div>
+│   │             </div>
+│   │   
+│   │           </div>
+│   │           
+│   │           <div className="flex-shrink-0 p-4 border-t border-border-color flex justify-between items-center bg-bg-primary rounded-b-lg">
+│   │                <div className="text-xs text-text-secondary italic flex items-center gap-2">
+│   │                   <Code size={14}/>
+│   │                   <span>{t('version')}</span>
+│   │                </div>
+│   │                <button
+│   │                 onClick={onClose}
+│   │                 className="bg-accent-primary text-white font-bold py-2 px-8 rounded-md hover:opacity-90 transition-opacity"
+│   │               >
+│   │                 {t('close')}
+│   │               </button>
+│   │           </div>
+│   │         </div>
+│   │         <style>{`
+│   │           @keyframes fade-in-scale {
+│   │             from { opacity: 0; transform: scale(0.95); }
+│   │             to { opacity: 1; transform: scale(1); }
+│   │           }
+│   │           .animate-fade-in-scale {
+│   │             animation: fade-in-scale 0.3s ease-out forwards;
+│   │           }
+│   │         `}</style>
+│   │       </div>
+│   │     );
+│   │   };
+│   │   
+│   │   export default AboutModal;
+│   ├── AnalysisTabs.tsx
+│   │   import React, { useState } from 'react';
+│   │   import { BarChart3, ListChecks } from 'lucide-react';
+│   │   import { VibrationAnalysisResult, ThemeColors } from '../types';
+│   │   import StatisticsChart from './StatisticsChart';
+│   │   import ChronologyChart from './ChronologyChart';
+│   │   import { useI18n } from '../hooks/useI18n';
+│   │   
+│   │   interface AnalysisTabsProps {
+│   │     analysisData: VibrationAnalysisResult;
+│   │     theme: ThemeColors;
+│   │   }
+│   │   
+│   │   type Tab = 'stats' | 'chrono';
+│   │   
+│   │   const AnalysisTabs: React.FC<AnalysisTabsProps> = ({ analysisData, theme }) => {
+│   │     const [activeTab, setActiveTab] = useState<Tab>('stats');
+│   │     const { t } = useI18n();
+│   │   
+│   │     const getTabClass = (tabName: Tab) => {
+│   │       const baseClasses = 'flex items-center gap-2 font-semibold text-sm py-3 px-6 cursor-pointer transition-all duration-300 border-b-2 focus:outline-none';
+│   │       if (activeTab === tabName) {
+│   │         return `${baseClasses} text-accent-primary border-accent-primary`;
+│   │       }
+│   │       return `${baseClasses} text-text-secondary border-transparent hover:text-text-primary hover:border-text-secondary/50`;
+│   │     };
+│   │   
+│   │     return (
+│   │       <div className="flex flex-col h-full bg-bg-primary rounded-lg overflow-hidden border border-border-color shadow-lg">
+│   │         <div className="flex-shrink-0 flex border-b border-border-color px-4">
+│   │           <button className={getTabClass('stats')} onClick={() => setActiveTab('stats')}>
+│   │             <BarChart3 size={16} />
+│   │             {t('statistics')}
+│   │           </button>
+│   │           <button className={getTabClass('chrono')} onClick={() => setActiveTab('chrono')}>
+│   │             <ListChecks size={16} />
+│   │             {t('chronology')}
+│   │           </button>
+│   │         </div>
+│   │         <div className="flex-grow overflow-hidden bg-bg-secondary/50">
+│   │           {activeTab === 'stats' && <StatisticsChart analysisData={analysisData} theme={theme} />}
+│   │           {activeTab === 'chrono' && <ChronologyChart analysisData={analysisData} theme={theme} />}
+│   │         </div>
+│   │       </div>
+│   │     );
+│   │   };
+│   │   
+│   │   export default AnalysisTabs;
+│   ├── ChronologyChart.tsx
+│   │   import React, { useMemo } from 'react';
+│   │   import { ResponsiveContainer, BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend, LabelList } from 'recharts';
+│   │   import { VibrationAnalysisResult, ThemeColors, VibrationDataPoint } from '../types';
+│   │   import { getNumericId } from '../services/analyzer';
+│   │   import { useI18n } from '../hooks/useI18n';
+│   │   
+│   │   interface ChronologyChartProps {
+│   │     analysisData: VibrationAnalysisResult;
+│   │     theme: ThemeColors;
+│   │   }
+│   │   
+│   │   const CustomBarLabel = (props: any) => {
+│   │       const { x, y, width, height, value, locale } = props;
+│   │       if (width < 80) return null; 
+│   │       const [start, end] = value;
+│   │       const timeOptions: Intl.DateTimeFormatOptions = { hour: '2-digit', minute: '2-digit', hour12: false };
+│   │       const startTime = new Date(start).toLocaleTimeString(locale, timeOptions);
+│   │       const endTime = new Date(end).toLocaleTimeString(locale, timeOptions);
+│   │   
+│   │       return (
+│   │           <g>
+│   │               <text x={x + width / 2} y={y + height / 2} fill="#fff" textAnchor="middle" dominantBaseline="middle" fontSize={10} fontWeight="bold">
+│   │                   {`${startTime} - ${endTime}`}
+│   │               </text>
+│   │           </g>
+│   │       );
+│   │   };
+│   │   
+│   │   
+│   │   const ChronologyChart: React.FC<ChronologyChartProps> = ({ analysisData, theme }) => {
+│   │     const { t, language } = useI18n();
+│   │   
+│   │     const chartData = useMemo(() => {
+│   │       return Object.entries(analysisData)
+│   │         .sort((a, b) => getNumericId(a[0]) - getNumericId(b[0]))
+│   │         .map(([vibroId, data]: [string, VibrationDataPoint]) => {
+│   │           if (!data.first_time_total || !data.last_time_total) return null;
+│   │           
+│   │           const startTime = data.first_time_total.getTime();
+│   │           const endTime = data.last_time_total.getTime();
+│   │   
+│   │           return {
+│   │             name: vibroId,
+│   │             range: [startTime, endTime]
+│   │           };
+│   │         }).filter((item): item is { name: string; range: [number, number] } => item !== null);
+│   │     }, [analysisData]);
+│   │   
+│   │     if (chartData.length === 0) {
+│   │       return (
+│   │           <div className="flex items-center justify-center h-full text-text-secondary">
+│   │               {t('noChronoData')}
+│   │           </div>
+│   │       );
+│   │     }
+│   │   
+│   │     const domain = [
+│   │         Math.min(...chartData.map(d => d.range[0])),
+│   │         Math.max(...chartData.map(d => d.range[1]))
+│   │     ];
+│   │     
+│   │     const locale = language === 'fr' ? 'fr-FR' : 'en-GB';
+│   │     const formatTime = (time: number) => new Date(time).toLocaleTimeString(locale, {hour: '2-digit', minute: '2-digit'});
+│   │   
+│   │     return (
+│   │       <div className="w-full h-full p-4">
+│   │         <ResponsiveContainer width="100%" height="100%">
+│   │           <BarChart
+│   │             layout="vertical"
+│   │             data={chartData}
+│   │             margin={{ top: 5, right: 30, left: 20, bottom: 20 }}
+│   │           >
+│   │             <CartesianGrid strokeDasharray="3 3" stroke={theme.border} strokeOpacity={0.5} />
+│   │             <XAxis 
+│   │               type="number" 
+│   │               domain={domain}
+│   │               scale="time"
+│   │               tickFormatter={formatTime}
+│   │               tick={{ fill: theme.text_secondary, fontSize: 12 }} 
+│   │               axisLine={{ stroke: theme.border }}
+│   │               tickLine={{ stroke: theme.border }}
+│   │             />
+│   │             <YAxis 
+│   │               type="category" 
+│   │               dataKey="name" 
+│   │               width={100}
+│   │               tick={{ fill: theme.text_secondary, fontSize: 12 }}
+│   │               axisLine={{ stroke: theme.border }}
+│   │               tickLine={{ stroke: theme.border }}
+│   │               interval={0}
+│   │             />
+│   │             <Tooltip
+│   │               labelStyle={{ color: theme.accent_primary, fontWeight: 'bold' }}
+│   │               contentStyle={{ backgroundColor: theme.bg_primary, borderColor: theme.border, color: theme.text_primary, borderRadius: '0.5rem' }}
+│   │               formatter={(value: any) => {
+│   │                   const [start, end] = value;
+│   │                   return `${formatTime(start)} - ${formatTime(end)}`;
+│   │               }}
+│   │                cursor={{ fill: theme.accent_primary, fillOpacity: 0.1 }}
+│   │             />
+│   │             <Legend wrapperStyle={{ color: theme.text_primary, paddingTop: '15px' }} />
+│   │             <Bar dataKey="range" name={t('operationalRangeLegend')} fill={theme.accent_primary} barSize={25}>
+│   │               <LabelList dataKey="range" content={<CustomBarLabel locale={locale} />} />
+│   │             </Bar>
+│   │           </BarChart>
+│   │         </ResponsiveContainer>
+│   │       </div>
+│   │     );
+│   │   };
+│   │   
+│   │   export default ChronologyChart;
+│   ├── MapModal.tsx
+│   │   import React, { useState, useRef, useEffect, useMemo, useContext, useCallback } from 'react';
+│   │   import ReactDOM from 'react-dom/client';
+│   │   import L from 'leaflet';
+│   │   (window as any).L = L; // Expose L globally for plugins that expect it
+│   │   import 'leaflet.markercluster';
+│   │   import 'leaflet-draw';
+│   │   import 'leaflet-geometryutil';
+│   │   import { Maximize, ChevronLeft, Layers, SlidersHorizontal, Download, X, Eye, Filter, Trash2, Search, Route, Menu, CheckSquare, Square, AlertTriangle, Ruler, CheckCircle, MapPin } from 'lucide-react';
+│   │   import { GeoSearchControl, OpenStreetMapProvider } from 'leaflet-geosearch';
+│   │   
+│   │   import { ThemeColors, VibrationPointDetail, VibrationRecord, VibrationPointStatus } from '../types';
+│   │   import { useI18n, I18nContext } from '../hooks/useI18n';
+│   │   import { getNumericId } from '../services/analyzer';
+│   │   
+│   │   // Fix for default icon path issue with bundlers
+│   │   delete (L.Icon.Default.prototype as any)._getIconUrl;
+│   │   L.Icon.Default.mergeOptions({
+│   │     iconRetinaUrl: 'https://unpkg.com/leaflet@1.9.4/dist/images/marker-icon-2x.png',
+│   │     iconUrl: 'https://unpkg.com/leaflet@1.9.4/dist/images/marker-icon.png',
+│   │     shadowUrl: 'https://unpkg.com/leaflet@1.9.4/dist/images/marker-shadow.png',
+│   │   });
+│   │   
+│   │   const createStatusIcon = (color: string) => L.divIcon({
+│   │       html: `<div class="w-3 h-3 rounded-full" style="background-color: ${color}; box-shadow: 0 0 6px ${color}, 0 0 10px ${color};"></div>`,
+│   │       className: 'bg-transparent border-0',
+│   │       iconSize: [12, 12],
+│   │       iconAnchor: [6, 6],
+│   │   });
+│   │   
+│   │   const leafletCssOverrides = `
+│   │     /* Popup */
+│   │     .custom-popup .leaflet-popup-content-wrapper { background-color: var(--color-bg-primary) !important; backdrop-filter: blur(10px); -webkit-backdrop-filter: blur(10px); background-opacity: 0.8; box-shadow: 0 8px 32px 0 rgba(0, 0, 0, 0.37) !important; border: 1px solid var(--color-border) !important; border-radius: 8px; }
+│   │     .custom-popup .leaflet-popup-tip { background: var(--color-bg-primary) !important; }
+│   │     .custom-popup .leaflet-popup-content { margin: 0 !important; }
+│   │     .custom-popup .leaflet-container a.leaflet-popup-close-button { display: none !important; }
+│   │     
+│   │     /* Clusters */
+│   │     .marker-cluster { border-radius: 50%; display: flex; align-items: center; justify-content: center; font-weight: bold; color: white; }
+│   │     .marker-cluster-ok { background-color: rgba(34, 197, 94, 0.7); border: 2px solid rgba(34, 197, 94, 1); }
+│   │     .marker-cluster-warning { background-color: rgba(219, 171, 9, 0.7); border: 2px solid rgba(219, 171, 9, 1); }
+│   │     .marker-cluster-overload { background-color: rgba(218, 54, 51, 0.7); border: 2px solid rgba(218, 54, 51, 1); }
+│   │     
+│   │     /* Geosearch */
+│   │     .leaflet-bar-part.search { border-bottom: none !important; }
+│   │     .leaflet-bar a.search-button, .leaflet-bar a.reset { width: 34px !important; height: 34px !important; line-height: 34px !important; }
+│   │     .leaflet-bar form { background-color: var(--color-bg-primary) !important; border: 1px solid var(--color-border) !important; }
+│   │     .leaflet-bar form input { background-color: var(--color-bg-secondary) !important; color: var(--color-text-primary) !important; border-color: var(--color-border) !important; }
+│   │     .leaflet-bar .results { background-color: var(--color-bg-primary) !important; border: 1px solid var(--color-border) !important; }
+│   │     .leaflet-bar .results > div:hover { background-color: var(--color-bg-tertiary) !important; }
+│   │     .leaflet-bar .results > div.active { background-color: var(--color-accent-primary) !important; }
+│   │   
+│   │     /* Tooltips */
+│   │     .operations-tooltip, .cluster-tooltip { background-color: var(--color-bg-tertiary) !important; border: 1px solid var(--color-border) !important; color: var(--color-text-primary) !important; box-shadow: 0 1px 3px rgba(0,0,0,0.4) !important; border-radius: 4px; padding: 6px !important; font-size: 12px; }
+│   │     .cluster-tooltip .status-ok { color: var(--color-accent-secondary); }
+│   │     .cluster-tooltip .status-warning { color: var(--color-warning); }
+│   │     .cluster-tooltip .status-overload { color: var(--color-overload); }
+│   │   
+│   │     /* Draw Control */
+│   │     .leaflet-draw-toolbar a { background-color: var(--color-bg-primary) !important; border-color: var(--color-border) !important; }
+│   │     .leaflet-draw-toolbar a:hover { background-color: var(--color-bg-tertiary) !important; }
+│   │     .leaflet-draw-actions a { background-color: var(--color-bg-tertiary) !important; color: var(--color-text-primary) !important; }
+│   │     .leaflet-draw-actions a:hover { background-color: var(--color-border) !important; }
+│   │   `;
+│   │   
+│   │   export interface PointData extends VibrationPointDetail {}
+│   │   
+│   │   const convertDMToDD = (degreesMinutes: string, direction: 'N' | 'S' | 'E' | 'W'): number => {
+│   │       const isLat = direction === 'N' || direction === 'S';
+│   │       const degreesPartIndex = isLat ? 2 : 3;
+│   │       if (degreesMinutes.length < degreesPartIndex + 2) return NaN;
+│   │       const degreesPartStr = degreesMinutes.slice(0, degreesPartIndex);
+│   │       const minutesPartStr = degreesMinutes.slice(degreesPartIndex);
+│   │       const degreesPart = parseInt(degreesPartStr, 10);
+│   │       const minutesPart = parseFloat(minutesPartStr);
+│   │       if (isNaN(degreesPart) || isNaN(minutesPart)) return NaN;
+│   │       let dd = degreesPart + minutesPart / 60;
+│   │       if (direction === 'S' || direction === 'W') { dd *= -1; }
+│   │       return dd;
+│   │   };
+│   │   
+│   │   const VapsPopupContent: React.FC<{ point: PointData; theme: ThemeColors; }> = ({ point, theme }) => {
+│   │       const { t } = useI18n();
+│   │       const data = [
+│   │           { label: 'time', value: point.time.toLocaleTimeString() },
+│   │           { label: 'popup_line', value: point.line }, { label: 'popup_point', value: point.point },
+│   │           { label: 'popup_shotNb', value: point.shotNb }, { label: 'popup_avgForce', value: `${point.avgForce}%` },
+│   │           { label: 'popup_avgPhase', value: `${point.avgPhase}°` }, { label: 'popup_avgDist', value: `${point.avgDist}%` },
+│   │       ];
+│   │       const vibratorNumber = Math.abs(getNumericId(point.vibroId));
+│   │       
+│   │       const getStatusStyle = (status: VibrationPointStatus) => {
+│   │           switch (status) {
+│   │               case 'ok': return { backgroundColor: theme.accent_secondary+'33', color: theme.accent_secondary };
+│   │               case 'warning': return { backgroundColor: theme.warning+'33', color: theme.warning };
+│   │               case 'overload': return { backgroundColor: theme.overload+'33', color: theme.overload };
+│   │               default: return { backgroundColor: theme.border, color: theme.text_secondary };
+│   │           }
+│   │       };
+│   │       const statusStyle = getStatusStyle(point.status);
+│   │   
+│   │       return (
+│   │           <div className="w-56 text-xs font-sans p-3">
+│   │               <div className="flex justify-between items-center pb-2 mb-2 border-b" style={{borderColor: theme.border}}>
+│   │                   <h3 className="font-bold text-sm text-accent-primary">{t('popup_vibrator')} {vibratorNumber}</h3>
+│   │                   <span className="font-mono text-xs px-2 py-0.5 rounded uppercase" style={statusStyle}>{t(point.status)}</span>
+│   │               </div>
+│   │               <div className="grid grid-cols-2 gap-x-3 gap-y-1.5">
+│   │                   {data.map(({ label, value }) => (
+│   │                       <React.Fragment key={label}>
+│   │                           <span className="text-text-secondary">{t(label)}:</span>
+│   │                           <span className="truncate font-semibold text-text-primary">{value}</span>
+│   │                       </React.Fragment>
+│   │                   ))}
+│   │               </div>
+│   │                {point.duplicateVibrators && (
+│   │                   <div className="mt-2 pt-2 border-t" style={{borderColor: theme.border}}>
+│   │                       <div className="flex items-center gap-1.5 text-warning font-semibold">
+│   │                           <AlertTriangle size={14} />
+│   │                           <span>Duplicate Shot</span>
+│   │                       </div>
+│   │                       <p className="text-text-secondary text-xs mt-1">
+│   │                           Performed by: {point.duplicateVibrators.join(', ')}
+│   │                       </p>
+│   │                   </div>
+│   │               )}
+│   │           </div>
+│   │       );
+│   │   };
+│   │   
+│   │   const VapsPointMarkers: React.FC<{ map: L.Map | null; points: PointData[]; icons: any; theme: ThemeColors; i18nContextValue: any; layerGroup: L.LayerGroup;}> = React.memo(({ map, points, icons, theme, i18nContextValue, layerGroup }) => {
+│   │     useEffect(() => {
+│   │       if (!map || !layerGroup) return;
+│   │       layerGroup.clearLayers();
+│   │       if (!points || points.length === 0) return;
+│   │   
+│   │       const markerClusterGroup = (L as any).markerClusterGroup({
+│   │         chunkedLoading: true,
+│   │         maxClusterRadius: 60,
+│   │         iconCreateFunction: (cluster: any) => {
+│   │           const childCount = cluster.getChildCount();
+│   │           const markers = cluster.getAllChildMarkers();
+│   │           let overloadCount = 0, warningCount = 0;
+│   │           markers.forEach((m: any) => { if (m.status === 'overload') overloadCount++; else if (m.status === 'warning') warningCount++; });
+│   │           let clusterClass = overloadCount > 0 ? 'marker-cluster-overload' : warningCount > 0 ? 'marker-cluster-warning' : 'marker-cluster-ok';
+│   │           let c = ' marker-cluster-';
+│   │           if (childCount < 10) c += 'small'; else if (childCount < 100) c += 'medium'; else c += 'large';
+│   │           return L.divIcon({ html: `<div><span>${childCount}</span></div>`, className: `marker-cluster${c} ${clusterClass}`, iconSize: L.point(40, 40) });
+│   │         },
+│   │       });
+│   │   
+│   │       markerClusterGroup.on('clustermouseover', (a: any) => {
+│   │           const markers = a.layer.getAllChildMarkers();
+│   │           let overloadCount = 0, warningCount = 0;
+│   │           markers.forEach((m: any) => { if (m.status === 'overload') overloadCount++; else if (m.status === 'warning') warningCount++; });
+│   │           const okCount = markers.length - overloadCount - warningCount;
+│   │           const parts = [];
+│   │           if (okCount > 0) parts.push(`<div class="status-ok">OK: ${okCount}</div>`);
+│   │           if (warningCount > 0) parts.push(`<div class="status-warning">Warning: ${warningCount}</div>`);
+│   │           if (overloadCount > 0) parts.push(`<div class="status-overload">Overload: ${overloadCount}</div>`);
+│   │           a.layer.bindTooltip(`<div style="font-weight: bold; margin-bottom: 4px;">Total: ${markers.length}</div>${parts.join('')}`, { direction: 'top', sticky: true, className: 'cluster-tooltip' }).openTooltip();
+│   │       });
+│   │       markerClusterGroup.on('clustermouseout', (a: any) => a.layer.closeTooltip());
+│   │   
+│   │       points.forEach(point => {
+│   │         const marker = L.marker([point.location.lat, point.location.lon], { icon: icons[point.status] });
+│   │         (marker as any).status = point.status;
+│   │         (marker as any).vibroId = point.vibroId;
+│   │         const popupContainer = document.createElement('div');
+│   │         ReactDOM.createRoot(popupContainer).render(<I18nContext.Provider value={i18nContextValue}><VapsPopupContent point={point} theme={theme} /></I18nContext.Provider>);
+│   │         marker.bindPopup(popupContainer, { minWidth: 224, className: 'custom-popup' });
+│   │         markerClusterGroup.addLayer(marker);
+│   │       });
+│   │       
+│   │       layerGroup.addLayer(markerClusterGroup);
+│   │     }, [points, map, icons, theme, i18nContextValue, layerGroup]);
+│   │   
+│   │     return null;
+│   │   });
+│   │   
+│   │   
+│   │   const MapModal: React.FC<{ isOpen: boolean; onClose: () => void; rawRecords: VibrationRecord[]; theme: ThemeColors; }> = ({ isOpen, onClose, rawRecords, theme }) => {
+│   │       const { t } = useI18n();
+│   │       const i18nContextValue = useContext(I18nContext);
+│   │       const [mapState, setMapState] = useState<'loading' | 'ready' | 'error'>('loading');
+│   │       const [activeVibratorId, setActiveVibratorId] = useState<string | null>(null);
+│   │       const [vapsPoints, setVapsPoints] = useState<PointData[]>([]);
+│   │       const [errorMessage, setErrorMessage] = useState<string | null>(null);
+│   │       
+│   │       useEffect(() => {
+│   │           if (isOpen) {
+│   │               setMapState('loading');
+│   │               
+│   │               setTimeout(() => {
+│   │                   try {
+│   │                       let hasAnyGpsData = false;
+│   │                       
+│   │                       const vapsDataExists = rawRecords && rawRecords.length > 0;
+│   │                       if (vapsDataExists) {
+│   │                           const points: PointData[] = rawRecords.flatMap(record => {
+│   │                               const gpggaMatch = record.gpgga?.match(/\$GPGGA,(\d{6}(?:\.\d{1,})?),(\d{4}\.\d+),([NS]),(\d{5}\.\d+),([EW]),\d,\d+,[\d\.]+,([\d\.-]+)/);
+│   │                               if (!record.vibratorId || !gpggaMatch) return [];
+│   │                               const lat = convertDMToDD(gpggaMatch[2], gpggaMatch[3] as 'N' | 'S');
+│   │                               const lon = convertDMToDD(gpggaMatch[4], gpggaMatch[5] as 'E' | 'W');
+│   │                               const elevation = parseFloat(gpggaMatch[6]);
+│   │                               if (isNaN(lat) || isNaN(lon) || isNaN(elevation)) return [];
+│   │                               const timeStr = gpggaMatch[1];
+│   │                               const time = new Date(1970, 0, 1, parseInt(timeStr.substring(0, 2)), parseInt(timeStr.substring(2, 4)), parseInt(timeStr.substring(4, 6)));
+│   │                               return [{
+│   │                                   id: record.id, vibroId: record.vibratorId, time, location: { lat, lon, elevation }, status: record.status,
+│   │                                   line: record.lineName || '', point: record.pointNumber || '', shotNb: record.shotNb?.toString() || '',
+│   │                                   avgForce: record.averageForce?.toString() || '0', avgPhase: record.averagePhase?.toString() || '0', avgDist: record.averageDistortion?.toString() || '0',
+│   │                                   slope: record.slope, aspect: record.aspect,
+│   │                                   duplicateVibrators: record.duplicateVibrators
+│   │                               }];
+│   │                           });
+│   │                           setVapsPoints(points);
+│   │                           if (points.length > 0) hasAnyGpsData = true;
+│   │                       } else {
+│   │                           setVapsPoints([]);
+│   │                       }
+│   │   
+│   │                       if (!hasAnyGpsData) { throw new Error(t('noGpsData')); }
+│   │                       setMapState('ready');
+│   │                   } catch (e) { 
+│   │                       const error = e as Error;
+│   │                       console.error("Error preparing map data:", error); 
+│   │                       setErrorMessage(error.message || t('mapDataError')); 
+│   │                       setMapState('error'); 
+│   │                   }
+│   │               }, 50);
+│   │           } else {
+│   │               setMapState('loading'); setVapsPoints([]); setErrorMessage(null); setActiveVibratorId(null);
+│   │           }
+│   │       }, [isOpen, rawRecords, t]);
+│   │     
+│   │       if (!isOpen) return null;
+│   │   
+│   │       return (
+│   │           <div className="fixed inset-0 bg-bg-primary z-40">
+│   │               <style>{leafletCssOverrides}</style>
+│   │               <div className="w-full h-full relative">
+│   │                   {mapState === 'ready' && (
+│   │                       <MapController
+│   │                          center={[32, 5]} zoom={6} scrollWheelZoom={true} maxZoom={22}
+│   │                          vapsPoints={vapsPoints}
+│   │                          activeVibratorId={activeVibratorId} setActiveVibratorId={setActiveVibratorId}
+│   │                          theme={theme}
+│   │                          i18nContextValue={i18nContextValue}
+│   │                       />
+│   │                   )}
+│   │                   {mapState !== 'ready' && (
+│   │                       <div className="absolute inset-0 z-[1000] flex flex-col items-center justify-center bg-bg-primary/90 backdrop-blur-sm gap-4 text-text-primary p-4 text-center">
+│   │                           {mapState === 'loading' && <div className="w-12 h-12 border-4 border-t-accent-primary border-transparent rounded-full animate-spin"></div>}
+│   │                           {mapState === 'error' && <AlertTriangle size={48} className="text-yellow-400" />}
+│   │                           <p className="text-xl">{mapState === 'loading' ? t('generatingStatus') : errorMessage}</p>
+│   │                       </div>
+│   │                   )}
+│   │                   <button onClick={onClose} className="absolute bottom-4 left-1/2 -translate-x-1/2 z-[1001] bg-accent-primary text-white font-bold py-2 px-8 rounded-full shadow-lg hover:opacity-90 transition-opacity">{t('returnToProgramInterface')}</button>
+│   │               </div>
+│   │           </div>
+│   │       );
+│   │   };
+│   │   
+│   │   interface MapControllerProps {
+│   │       vapsPoints: PointData[];
+│   │       activeVibratorId: string | null;
+│   │       setActiveVibratorId: (id: string | null) => void;
+│   │       theme: ThemeColors;
+│   │       i18nContextValue: any;
+│   │       center: L.LatLngTuple;
+│   │       zoom: number;
+│   │       scrollWheelZoom: boolean;
+│   │       maxZoom: number;
+│   │   }
+│   │   
+│   │   const MapController: React.FC<MapControllerProps> = ({ vapsPoints, activeVibratorId, setActiveVibratorId, theme, i18nContextValue, ...rest }) => {
+│   │       const [map, setMap] = useState<L.Map | null>(null);
+│   │       const mapRef = useRef<HTMLDivElement>(null);
+│   │       const pointLayerRef = useRef<L.FeatureGroup | null>(null);
+│   │       const drawnItemsRef = useRef<L.FeatureGroup | null>(null);
+│   │       const drawHandlerRef = useRef<any>(null);
+│   │   
+│   │       const { t } = useI18n();
+│   │       const statusIcons = useMemo(() => ({ ok: createStatusIcon(theme.accent_secondary), overload: createStatusIcon(theme.overload), warning: createStatusIcon(theme.warning) }), [theme]);
+│   │   
+│   │       const [filteredVapsPoints, setFilteredVapsPoints] = useState<PointData[]>(vapsPoints);
+│   │       
+│   │       const pointsToShow = useMemo(() => activeVibratorId ? filteredVapsPoints.filter(p => p.vibroId === activeVibratorId) : filteredVapsPoints, [activeVibratorId, filteredVapsPoints]);
+│   │       
+│   │       useEffect(() => {
+│   │           let mapInstance: L.Map | null = null;
+│   │           if (mapRef.current && !map) {
+│   │               mapInstance = L.map(mapRef.current, { ...rest });
+│   │   
+│   │               const baseLayers = {
+│   │                   [t('satellite')]: L.tileLayer('https://{s}.google.com/vt/lyrs=s&x={x}&y={y}&z={z}',{ maxZoom: 22, subdomains:['mt0','mt1','mt2','mt3'], attribution: '&copy; Google' }),
+│   │                   [t('streetMap')]: L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', { attribution: '&copy; OpenStreetMap', maxZoom: 22 }),
+│   │                   [t('terrain')]: L.tileLayer('https://{s}.tile.opentopomap.org/{z}/{x}/{y}.png', { maxZoom: 17, attribution: 'Map data: &copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors, <a href="http://viewfinderpanoramas.org">SRTM</a> | Map style: &copy; <a href="https://opentopomap.org">OpenTopoMap</a> (<a href="https://creativecommons.org/licenses/by-sa/3.0/">CC-BY-SA</a>)' })
+│   │               };
+│   │               baseLayers[t('satellite')].addTo(mapInstance);
+│   │               
+│   │               pointLayerRef.current = L.featureGroup().addTo(mapInstance);
+│   │               
+│   │               const overlays = {
+│   │                   [t('vibrationPoints')]: pointLayerRef.current,
+│   │               };
+│   │   
+│   │               L.control.layers(baseLayers, overlays).addTo(mapInstance);
+│   │               
+│   │               setMap(mapInstance);
+│   │   
+│   │               const searchControl = new (GeoSearchControl as any)({ provider: new OpenStreetMapProvider(), style: 'bar', showMarker: true, marker: { icon: new L.Icon.Default(), draggable: false }, autoClose: true, keepResult: true, searchLabel: t('searchLabelPlaceholder'), });
+│   │               mapInstance.addControl(searchControl);
+│   │               L.control.scale({ imperial: false }).addTo(mapInstance);
+│   │   
+│   │               const drawnItems = new L.FeatureGroup();
+│   │               mapInstance.addLayer(drawnItems);
+│   │               drawnItemsRef.current = drawnItems;
+│   │   
+│   │               mapInstance.on(((L as any).Draw).Event.CREATED, (event: any) => {
+│   │                   const layer = event.layer;
+│   │                   drawnItems.addLayer(layer);
+│   │                   if (drawHandlerRef.current) {
+│   │                       drawHandlerRef.current.disable();
+│   │                       drawHandlerRef.current = null;
+│   │                   }
+│   │               
+│   │                   if (event.layerType === 'polyline') {
+│   │                       const latlngs = layer.getLatLngs();
+│   │                       let distance = 0;
+│   │                       if (latlngs.length > 1) {
+│   │                           for (let i = 0; i < latlngs.length - 1; i++) {
+│   │                               distance += latlngs[i].distanceTo(latlngs[i + 1]);
+│   │                           }
+│   │                       }
+│   │                       const distanceStr = distance > 1000 ? `${(distance / 1000).toFixed(2)} km` : `${distance.toFixed(2)} m`;
+│   │                       layer.bindPopup(`<b>${t('distance')}:</b> ${distanceStr}`).openPopup();
+│   │                   } else if (event.layerType === 'polygon') {
+│   │                       const area = (L as any).GeometryUtil.geodesicArea(layer.getLatLngs()[0]);
+│   │                       const areaStr = area > 10000 ? `${(area / 10000).toFixed(2)} ha` : `${area.toFixed(2)} m²`;
+│   │                       layer.bindPopup(`<b>${t('area')}:</b> ${areaStr}`).openPopup();
+│   │                   }
+│   │               });
+│   │           }
+│   │       }, [map, t, rest]);
+│   │       
+│   │       useEffect(() => {
+│   │           if (!map) return;
+│   │           let bounds = L.latLngBounds([]);
+│   │           if (pointLayerRef.current && pointLayerRef.current.getLayers().length > 0) {
+│   │               bounds.extend(pointLayerRef.current.getBounds());
+│   │           }
+│   │          
+│   │           if (bounds.isValid()) {
+│   │               map.flyToBounds(bounds, { padding: L.point(70, 70), duration: 1.2 });
+│   │           }
+│   │       }, [pointsToShow, map]);
+│   │   
+│   │       const vibratorSummaries = useMemo(() => {
+│   │         const summaries = new Map<string, { count: number }>();
+│   │         vapsPoints.forEach(p => {
+│   │           const s = summaries.get(p.vibroId) || { count: 0 };
+│   │           s.count++;
+│   │           summaries.set(p.vibroId, s);
+│   │         });
+│   │         return summaries;
+│   │       }, [vapsPoints]);
+│   │   
+│   │       const sortedVibrators = useMemo(() => Array.from(vibratorSummaries.keys()).sort((a,b) => getNumericId(a) - getNumericId(b)), [vibratorSummaries]);
+│   │   
+│   │       const handleStartDrawing = (type: 'polyline' | 'polygon') => {
+│   │           if (!map) return;
+│   │           if (drawHandlerRef.current) drawHandlerRef.current.disable();
+│   │           const drawOptions = { shapeOptions: { color: theme.accent_primary, weight: 3, opacity: 0.8, }, metric: true, showLength: true, };
+│   │           drawHandlerRef.current = type === 'polyline' ? new (L as any).Draw.Polyline(map, drawOptions) : new (L as any).Draw.Polygon(map, drawOptions);
+│   │           drawHandlerRef.current.enable();
+│   │       };
+│   │       const handleClearMeasurements = () => drawnItemsRef.current?.clearLayers();
+│   │   
+│   │       return (
+│   │           <div className="w-full h-full relative">
+│   │               <div ref={mapRef} className="w-full h-full" />
+│   │               {map && <VapsPointMarkers map={map} points={pointsToShow} icons={statusIcons} theme={theme} i18nContextValue={i18nContextValue} layerGroup={pointLayerRef.current!} />}
+│   │               {map && <ControlPanel map={map} allPoints={vapsPoints} onFilter={setFilteredVapsPoints} theme={theme} sortedVibrators={sortedVibrators} vibratorSummaries={vibratorSummaries} activeVibratorId={activeVibratorId} setActiveVibratorId={setActiveVibratorId} onMeasureDistance={() => handleStartDrawing('polyline')} onMeasureArea={() => handleStartDrawing('polygon')} onClearMeasurements={handleClearMeasurements} />}
+│   │           </div>
+│   │       );
+│   │   };
+│   │   
+│   │   const ControlPanel: React.FC<any> = ({ map, allPoints, onFilter, theme, sortedVibrators, vibratorSummaries, activeVibratorId, setActiveVibratorId, onMeasureDistance, onMeasureArea, onClearMeasurements }) => {
+│   │       const { t } = useI18n();
+│   │       const panelRef = useRef<HTMLDivElement>(null);
+│   │       const [isCollapsed, setIsCollapsed] = useState(false);
+│   │       const [filters, setFilters] = useState({ ok: true, warning: true, overload: true });
+│   │       
+│   │       useEffect(() => { if (panelRef.current) { L.DomEvent.disableClickPropagation(panelRef.current); L.DomEvent.disableScrollPropagation(panelRef.current); } }, []);
+│   │       
+│   │       useEffect(() => {
+│   │           const filtered = allPoints.filter((p: PointData) => (filters as any)[p.status]);
+│   │           onFilter(filtered);
+│   │       }, [filters, allPoints, onFilter]);
+│   │   
+│   │       const hasVapsData = sortedVibrators.length > 0;
+│   │   
+│   │       return (
+│   │           <div ref={panelRef} className={`absolute top-4 left-4 z-[1001] bg-bg-primary/80 backdrop-blur-md rounded-lg shadow-2xl border border-border-color transition-all duration-300 ${isCollapsed ? 'w-12' : 'w-72'}`}>
+│   │               <button onClick={() => setIsCollapsed(!isCollapsed)} className="absolute -right-3 top-1/2 -translate-y-1/2 bg-bg-tertiary p-1 rounded-full border border-border-color hover:bg-border-color">
+│   │                   {isCollapsed ? <Menu size={16} /> : <ChevronLeft size={16} />}
+│   │               </button>
+│   │               <div className={`transition-opacity duration-200 ${isCollapsed ? 'opacity-0 invisible h-0' : 'opacity-100 visible p-3 flex flex-col'}`} style={{ height: isCollapsed ? '0' : 'calc(100vh - 48px)'}}>
+│   │                   <div className="flex-shrink-0">
+│   │                       <h2 className="text-lg font-bold flex items-center gap-2 mb-3"><SlidersHorizontal size={18} /> {t('controlPanel')}</h2>
+│   │                       {hasVapsData && (
+│   │                           <div className="mb-4">
+│   │                               <h3 className="font-semibold text-sm mb-2">{t('filterPoints')}</h3>
+│   │                               <div className="space-y-2 text-sm">
+│   │                                   {['ok', 'warning', 'overload'].map(status => (
+│   │                                       <label key={status} className="flex items-center gap-2 cursor-pointer p-2 rounded-md hover:bg-bg-secondary">
+│   │                                           {(filters as any)[status] ? <CheckSquare size={16} className="text-accent-primary"/> : <Square size={16} className="text-text-secondary"/>}
+│   │                                           <input type="checkbox" checked={(filters as any)[status]} onChange={e => setFilters(f => ({...f, [status]: e.target.checked}))} className="hidden"/>
+│   │                                           <span>{t(status)}</span>
+│   │                                       </label>
+│   │                                   ))}
+│   │                               </div>
+│   │                           </div>
+│   │                       )}
+│   │                   </div>
+│   │   
+│   │                   <div className="flex-grow overflow-y-auto pr-1 mb-4">
+│   │                       {hasVapsData && (
+│   │                           <div>
+│   │                               <h3 className="font-semibold text-sm mb-2">{t('vibratorList')}</h3>
+│   │                               <div className="space-y-1">
+│   │                                   <button onClick={() => setActiveVibratorId(null)} className={`w-full text-left p-2 text-sm rounded-md font-semibold flex items-center gap-2 transition-colors ${activeVibratorId === null ? 'bg-accent-primary text-white' : 'bg-bg-secondary hover:bg-bg-tertiary'}`}>
+│   │                                       <Eye size={16} />{t('showAll')}
+│   │                                   </button>
+│   │                                   {sortedVibrators.map((id: string) => (
+│   │                                       <button key={id} onClick={() => setActiveVibratorId(id)} className={`w-full text-left p-2 text-sm rounded-md font-semibold flex items-center justify-between transition-colors ${activeVibratorId === id ? 'bg-accent-primary text-white' : 'bg-bg-secondary hover:bg-bg-tertiary'}`}>
+│   │                                           <span>{`${t('popup_vibrator')} ${Math.abs(getNumericId(id))}`}</span>
+│   │                                           <span className="bg-bg-primary text-text-secondary text-xs font-mono px-2 py-0.5 rounded-full">{vibratorSummaries.get(id).count}</span>
+│   │                                       </button>
+│   │                                   ))}
+│   │                               </div>
+│   │                           </div>
+│   │                       )}
+│   │                   </div>
+│   │   
+│   │                   <div className="flex-shrink-0 pt-4 border-t border-border-color">
+│   │                        <div>
+│   │                           <h3 className="font-semibold text-sm mb-2">{t('tools')}</h3>
+│   │                           <div className="space-y-1">
+│   │                               <button onClick={onMeasureDistance} className="w-full text-left p-2 text-sm rounded-md font-semibold flex items-center gap-2 transition-colors bg-bg-secondary hover:bg-bg-tertiary">
+│   │                                   <Ruler size={16} className="text-accent-primary"/> <span>{t('measureDistance')}</span>
+│   │                               </button>
+│   │                               <button onClick={onMeasureArea} className="w-full text-left p-2 text-sm rounded-md font-semibold flex items-center gap-2 transition-colors bg-bg-secondary hover:bg-bg-tertiary">
+│   │                                   <Square size={16} className="text-accent-primary"/> <span>{t('measureArea')}</span>
+│   │                               </button>
+│   │                               <button onClick={onClearMeasurements} className="w-full text-left p-2 text-sm rounded-md font-semibold flex items-center gap-2 transition-colors bg-bg-secondary hover:bg-bg-tertiary">
+│   │                                   <Trash2 size={16} className="text-red-500"/> <span>{t('clear')}</span>
+│   │                               </button>
+│   │                           </div>
+│   │                       </div>
+│   │                   </div>
+│   │               </div>
+│   │           </div>
+│   │       );
+│   │   };
+│   │   
+│   │   export default MapModal;
+│   ├── StatisticsChart.tsx
+│   │   import React, { useMemo } from 'react';
+│   │   import { ResponsiveContainer, ComposedChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend, LabelList } from 'recharts';
+│   │   import { VibrationAnalysisResult, ThemeColors, VibrationDataPoint } from '../types';
+│   │   import { getNumericId, formatDurationForStatsLabel, formatDurationForTooltip } from '../services/analyzer';
+│   │   import { useI18n } from '../hooks/useI18n';
+│   │   
+│   │   interface StatisticsChartProps {
+│   │     analysisData: VibrationAnalysisResult;
+│   │     theme: ThemeColors;
+│   │   }
+│   │   
+│   │   const StatisticsChart: React.FC<StatisticsChartProps> = ({ analysisData, theme }) => {
+│   │     const { t } = useI18n();
+│   │   
+│   │     const chartData = useMemo(() => {
+│   │       return Object.entries(analysisData)
+│   │         .sort((a, b) => getNumericId(a[0]) - getNumericId(b[0]))
+│   │         .map(([vibroId, data]: [string, VibrationDataPoint]) => ({
+│   │           name: vibroId,
+│   │           totalVibrations: data.count,
+│   │           totalDuration: Math.round(data.duration_seconds_total),
+│   │         }));
+│   │     }, [analysisData]);
+│   │   
+│   │     return (
+│   │       <div className="w-full h-full p-4">
+│   │         <ResponsiveContainer width="100%" height="100%">
+│   │           <ComposedChart data={chartData} margin={{ top: 20, right: 40, left: 30, bottom: 40 }}>
+│   │             <CartesianGrid strokeDasharray="3 3" stroke={theme.border} strokeOpacity={0.5} />
+│   │             <XAxis 
+│   │               dataKey="name" 
+│   │               tick={{ fill: theme.text_secondary, fontSize: 12 }} 
+│   │               angle={-45} 
+│   │               textAnchor="end"
+│   │               height={60}
+│   │               interval={0}
+│   │               axisLine={{ stroke: theme.border }}
+│   │               tickLine={{ stroke: theme.border }}
+│   │             />
+│   │             <YAxis 
+│   │               yAxisId="left" 
+│   │               orientation="left" 
+│   │               stroke={theme.accent_secondary} 
+│   │               tick={{ fill: theme.text_secondary, fontSize: 12 }}
+│   │               axisLine={{ stroke: theme.border }}
+│   │               tickLine={{ stroke: theme.border }}
+│   │               label={{ value: t('totalVibrationYLabel'), angle: -90, position: 'insideLeft', fill: theme.text_secondary, dx: -20, fontSize: 14 }}
+│   │             />
+│   │             <YAxis 
+│   │               yAxisId="right" 
+│   │               orientation="right" 
+│   │               stroke={theme.accent_primary}
+│   │               tick={{ fill: theme.text_secondary, fontSize: 12 }}
+│   │               axisLine={{ stroke: theme.border }}
+│   │               tickLine={{ stroke: theme.border }}
+│   │               label={{ value: t('totalDurationYLabel'), angle: -90, position: 'insideRight', fill: theme.text_secondary, dx: 30, fontSize: 14 }}
+│   │             />
+│   │             <Tooltip
+│   │               contentStyle={{
+│   │                 backgroundColor: theme.bg_primary,
+│   │                 borderColor: theme.border,
+│   │                 color: theme.text_primary,
+│   │                 borderRadius: '0.5rem',
+│   │                 boxShadow: '0 4px 8px rgba(0,0,0,0.2)'
+│   │               }}
+│   │               labelStyle={{ color: theme.text_primary, fontWeight: 'bold' }}
+│   │               cursor={{ fill: theme.accent_primary, fillOpacity: 0.1 }}
+│   │               formatter={(value: number, name: string) => {
+│   │                 if (name === t('totalDurationLegend')) {
+│   │                   return [formatDurationForTooltip(value), name];
+│   │                 }
+│   │                 return [value, name];
+│   │               }}
+│   │             />
+│   │             <Legend wrapperStyle={{ color: theme.text_primary, paddingTop: '30px' }} />
+│   │             <Bar yAxisId="left" dataKey="totalVibrations" name={t('totalVibrationsLegend')} fill={theme.accent_secondary} barSize={30}>
+│   │               <LabelList dataKey="totalVibrations" position="top" fill={theme.text_primary} fontSize={10} />
+│   │             </Bar>
+│   │             <Bar yAxisId="right" dataKey="totalDuration" name={t('totalDurationLegend')} fill={theme.accent_primary} barSize={30}>
+│   │                <LabelList dataKey="totalDuration" position="top" fill={theme.text_primary} fontSize={10} formatter={(value: number) => formatDurationForStatsLabel(value)} />
+│   │             </Bar>
+│   │           </ComposedChart>
+│   │         </ResponsiveContainer>
+│   │       </div>
+│   │     );
+│   │   };
+│   │   
+│   │   export default StatisticsChart;
+│   ├── SummaryModal.tsx
+│   │   import React, { useState } from 'react';
+│   │   import { X, Sparkles, BrainCircuit, Loader2, Users, CheckCircle, CopyX, Timer, AlertTriangle } from 'lucide-react';
+│   │   import { SummaryData, ThemeColors, VibrationRecord } from '../types';
+│   │   import { useI18n } from '../hooks/useI18n';
+│   │   import { generateNarrativeSummary } from '../services/geminiService';
+│   │   import AIInsightModal from './AIInsightModal';
+│   │   
+│   │   // New Conflicted Shots Modal Component
+│   │   interface ConflictedShotsModalProps {
+│   │     isOpen: boolean;
+│   │     onClose: () => void;
+│   │     details: { shotNb: number; vibrators: string[] }[];
+│   │     theme: ThemeColors;
+│   │   }
+│   │   
+│   │   const ConflictedShotsModal: React.FC<ConflictedShotsModalProps> = ({ isOpen, onClose, details }) => {
+│   │     const { t } = useI18n();
+│   │     if (!isOpen) return null;
+│   │   
+│   │     return (
+│   │       <div className="fixed inset-0 bg-black bg-opacity-70 flex justify-center items-center z-[60] p-4 transition-opacity">
+│   │         <div
+│   │           className="bg-bg-tertiary/80 backdrop-blur-md text-text-primary rounded-lg shadow-2xl w-full max-w-2xl border border-border-color flex flex-col transform transition-all duration-300 scale-95 opacity-0 animate-fade-in-scale"
+│   │           style={{ height: 'auto', maxHeight: '70vh' }}
+│   │         >
+│   │           <div className="flex justify-between items-center p-4 border-b border-border-color">
+│   │             <h2 className="text-xl font-bold text-warning flex items-center gap-2">
+│   │               <AlertTriangle size={22} />
+│   │               {t('conflictedShotsDetailTitle')}
+│   │             </h2>
+│   │             <button onClick={onClose} className="text-text-secondary hover:text-text-primary transition-colors rounded-full p-1 focus:outline-none focus:ring-2 focus:ring-accent-primary">
+│   │               <X size={24} />
+│   │             </button>
+│   │           </div>
+│   │   
+│   │           <div className="p-6 flex-grow overflow-y-auto">
+│   │             <div className="overflow-auto rounded-lg border border-border-color bg-bg-primary max-h-[calc(70vh-150px)]">
+│   │               <table className="w-full border-collapse min-w-[400px] text-sm text-left text-text-primary">
+│   │                 <thead className="sticky top-0 bg-bg-tertiary shadow-sm">
+│   │                   <tr>
+│   │                     <th className="p-3 font-semibold text-text-primary/80 uppercase tracking-wider border-b-2 border-border-color">{t('shotNumber')}</th>
+│   │                     <th className="p-3 font-semibold text-text-primary/80 uppercase tracking-wider border-b-2 border-border-color">{t('vibratorsInvolved')}</th>
+│   │                   </tr>
+│   │                 </thead>
+│   │                 <tbody>
+│   │                   {details.map(detail => (
+│   │                     <tr key={detail.shotNb} className="hover:bg-bg-tertiary/50 transition-colors">
+│   │                       <td className="p-2 font-mono">{detail.shotNb}</td>
+│   │                       <td className="p-2 font-semibold">{detail.vibrators.join(', ')}</td>
+│   │                     </tr>
+│   │                   ))}
+│   │                 </tbody>
+│   │               </table>
+│   │             </div>
+│   │           </div>
+│   │   
+│   │           <div className="flex-shrink-0 p-4 border-t border-border-color flex justify-end bg-bg-primary rounded-b-lg">
+│   │             <button
+│   │               onClick={onClose}
+│   │               className="bg-accent-primary text-white font-bold py-2 px-8 rounded-md hover:opacity-90 transition-opacity"
+│   │             >
+│   │               {t('close')}
+│   │             </button>
+│   │           </div>
+│   │         </div>
+│   │         <style>{`
+│   │           @keyframes fade-in-scale {
+│   │             from { opacity: 0; transform: scale(0.95); }
+│   │             to { opacity: 1; transform: scale(1); }
+│   │           }
+│   │           .animate-fade-in-scale {
+│   │             animation: fade-in-scale 0.3s ease-out forwards;
+│   │           }
+│   │         `}</style>
+│   │       </div>
+│   │     );
+│   │   };
+│   │   
+│   │   
+│   │   interface SummaryModalProps {
+│   │     isOpen: boolean;
+│   │     onClose: () => void;
+│   │     summary: SummaryData | null;
+│   │     rawRecords: VibrationRecord[];
+│   │     theme: ThemeColors;
+│   │   }
+│   │   
+│   │   const SummaryModal: React.FC<SummaryModalProps> = ({ isOpen, onClose, summary, rawRecords, theme }) => {
+│   │     const { t, language } = useI18n();
+│   │     
+│   │     const [isGeneratingNarrative, setIsGeneratingNarrative] = useState(false);
+│   │     const [aiNarrative, setAiNarrative] = useState<string | null>(null);
+│   │   
+│   │     const [isInsightModalOpen, setInsightModalOpen] = useState(false);
+│   │     const [selectedVibratorId, setSelectedVibratorId] = useState<string | null>(null);
+│   │     const [recordsForInsight, setRecordsForInsight] = useState<VibrationRecord[]>([]);
+│   │   
+│   │     const [isConflictModalOpen, setConflictModalOpen] = useState(false);
+│   │   
+│   │     if (!isOpen || !summary) return null;
+│   │     
+│   │     const handleGenerateNarrative = async () => {
+│   │         if (!summary) return;
+│   │         setIsGeneratingNarrative(true);
+│   │         setAiNarrative(null);
+│   │         try {
+│   │           const narrative = await generateNarrativeSummary(summary, language);
+│   │           setAiNarrative(narrative);
+│   │         } catch (error) {
+│   │           console.error(error);
+│   │           alert(error instanceof Error ? error.message : t('aiApiError'));
+│   │         } finally {
+│   │           setIsGeneratingNarrative(false);
+│   │         }
+│   │     };
+│   │   
+│   │     const handleDiagnoseClick = (vibroId: string) => {
+│   │       const records = rawRecords.filter(r => r.vibratorId === vibroId);
+│   │       setSelectedVibratorId(vibroId);
+│   │       setRecordsForInsight(records);
+│   │       setInsightModalOpen(true);
+│   │     };
+│   │     
+│   │     const general = summary.general_summary;
+│   │     const hasConflicts = general.conflicted_shot_details.length > 0;
+│   │   
+│   │     const cards = [
+│   │       { label: t('totalVibrators'), value: general.total_vibros, icon: Users },
+│   │       { label: t('netOperations'), value: general.net_operations, icon: CheckCircle },
+│   │       { label: t('totalDuplicates'), value: general.total_duplicates, icon: CopyX },
+│   │       { label: t('conflictedShots'), value: general.conflicted_shot_details.length, icon: AlertTriangle },
+│   │       { label: t('totalDuration'), value: general.total_operation_duration_str, icon: Timer },
+│   │     ];
+│   │     
+│   │     const getDupPercColor = (perc: number) => {
+│   │         if (perc > 10) return 'text-overload font-bold';
+│   │         if (perc > 5) return 'text-warning';
+│   │         return 'text-text-primary';
+│   │     };
+│   │     
+│   │     const tableHeaders = ['vibroId', 'totalOps', 'netOps', 'duplicates', 'conflictedOps', 'firstOp', 'lastOp', 'totalDuration', 'actions'];
+│   │   
+│   │     return (
+│   │       <>
+│   │       <div className="fixed inset-0 bg-black bg-opacity-70 flex justify-center items-center z-50 p-4 transition-opacity">
+│   │         <div 
+│   │           className="bg-bg-tertiary/80 backdrop-blur-md text-text-primary rounded-lg shadow-2xl w-full max-w-7xl border border-border-color flex flex-col transform transition-all duration-300 scale-95 opacity-0 animate-fade-in-scale"
+│   │           style={{ height: 'auto', maxHeight: '90vh' }}
+│   │           >
+│   │           
+│   │           {/* Header */}
+│   │           <div className="flex justify-between items-center p-4 border-b border-border-color flex-shrink-0">
+│   │             <div>
+│   │               <h1 className="text-2xl font-bold text-accent-primary">{t('analysisReport')}</h1>
+│   │               <p className="text-sm italic text-text-secondary">{t('sourceFile')}: {summary.source_file} | {t('generated')}: {summary.timestamp}</p>
+│   │             </div>
+│   │             <button onClick={onClose} className="p-1 rounded-full hover:bg-bg-primary transition-colors"><X size={24} /></button>
+│   │           </div>
+│   │   
+│   │           <div className="p-6 flex-grow overflow-y-auto bg-bg-secondary/30">
+│   │             <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-5 gap-4 mb-6">
+│   │               {cards.map(card => {
+│   │                 const isConflictCard = card.label === t('conflictedShots');
+│   │                 const isClickable = isConflictCard && hasConflicts;
+│   │                 return (
+│   │                   <div 
+│   │                     key={card.label} 
+│   │                     className={`bg-bg-primary p-4 rounded-lg border border-border-color shadow-md flex items-center gap-4 ${isClickable ? 'cursor-pointer hover:bg-bg-tertiary transition-colors' : ''}`}
+│   │                     onClick={isClickable ? () => setConflictModalOpen(true) : undefined}
+│   │                   >
+│   │                     <div className="bg-bg-tertiary p-3 rounded-full">
+│   │                         <card.icon size={24} className={isConflictCard ? 'text-warning' : 'text-accent-primary'} />
+│   │                     </div>
+│   │                     <div>
+│   │                       <p className="text-sm text-text-secondary mb-1">{card.label}</p>
+│   │                       <p className="text-2xl font-bold text-text-primary">{card.value}</p>
+│   │                     </div>
+│   │                   </div>
+│   │                 )
+│   │               })}
+│   │             </div>
+│   │   
+│   │             <div className="bg-bg-primary p-4 rounded-lg border border-border-color">
+│   │               <div className="flex justify-between items-center mb-4">
+│   │                 <h3 className="text-lg font-semibold flex items-center gap-2 text-accent-secondary">
+│   │                   <Sparkles size={18}/>
+│   │                   {t('aiReport')}
+│   │                 </h3>
+│   │                  <button
+│   │                   onClick={handleGenerateNarrative}
+│   │                   disabled={isGeneratingNarrative}
+│   │                   className="bg-accent-secondary text-white font-bold py-2 px-4 rounded-md hover:opacity-90 transition-all flex items-center gap-2 disabled:bg-gray-500 disabled:opacity-50 disabled:cursor-not-allowed"
+│   │                 >
+│   │                   {isGeneratingNarrative ? <Loader2 size={20} className="animate-spin" /> : <Sparkles size={20} />}
+│   │                   <span>{isGeneratingNarrative ? t('generating') : t('generateAiReport')}</span>
+│   │                 </button>
+│   │               </div>
+│   │                {(isGeneratingNarrative || aiNarrative) && (
+│   │                 <div className="p-4 bg-bg-secondary rounded-md border border-border-color">
+│   │                   {isGeneratingNarrative && <p className="text-text-secondary italic">{t('generating')}...</p>}
+│   │                   {aiNarrative && <p className="text-text-primary whitespace-pre-wrap font-sans leading-relaxed">{aiNarrative}</p>}
+│   │                 </div>
+│   │               )}
+│   │             </div>
+│   │             
+│   │             <div className="mt-6">
+│   │               <h2 className="text-xl font-semibold mb-3 text-accent-primary">{t('individualPerformance')}</h2>
+│   │               <div className="overflow-auto rounded-lg border border-border-color bg-bg-primary max-h-[40vh]">
+│   │                 <table className="w-full border-collapse min-w-[900px] text-sm text-left text-text-primary">
+│   │                     <thead className="sticky top-0 bg-bg-tertiary shadow-sm">
+│   │                         <tr>
+│   │                             {tableHeaders.map(key => (
+│   │                               <th key={key} className="p-3 font-semibold text-text-primary/80 uppercase tracking-wider border-b-2 border-border-color">
+│   │                                   {t(key)}
+│   │                               </th>
+│   │                             ))}
+│   │                         </tr>
+│   │                     </thead>
+│   │                     <tbody>
+│   │                         {summary.individual_performance.map((perf, index) => (
+│   │                             <tr key={perf.vibro_id} className={`${index % 2 === 0 ? 'bg-transparent' : 'bg-bg-secondary/30'} hover:bg-bg-tertiary/50 transition-colors`}>
+│   │                                 <td className="p-3 font-semibold text-accent-secondary">{perf.vibro_id}</td>
+│   │                                 <td className="p-3">{perf.count}</td>
+│   │                                 <td className="p-3">{perf.net_count}</td>
+│   │                                 <td className={`p-3 ${getDupPercColor(perf.dup_perc)}`}>{perf.duplicates} ({perf.dup_perc.toFixed(1)}%)</td>
+│   │                                 <td className={`p-3 ${perf.multi_vib_shots > 0 ? 'text-warning font-semibold' : ''}`}>{perf.multi_vib_shots}</td>
+│   │                                 <td className="p-3 font-mono">{perf.first_time}</td>
+│   │                                 <td className="p-3 font-mono">{perf.last_time}</td>
+│   │                                 <td className="p-3">{perf.duration_total}</td>
+│   │                                 <td className="p-3 text-center">
+│   │                                     <button 
+│   │                                         onClick={() => handleDiagnoseClick(perf.vibro_id)}
+│   │                                         title={t('diagnoseIssues')}
+│   │                                         className="p-2 rounded-full text-accent-secondary hover:bg-accent-secondary/10 transition-colors"
+│   │                                     >
+│   │                                         <BrainCircuit size={18} />
+│   │                                     </button>
+│   │                                 </td>
+│   │                             </tr>
+│   │                         ))}
+│   │                     </tbody>
+│   │                 </table>
+│   │               </div>
+│   │             </div>
+│   │           </div>
+│   │           
+│   │           <div className="flex-shrink-0 p-4 border-t border-border-color flex justify-center bg-bg-primary rounded-b-lg">
+│   │                <button
+│   │                 onClick={onClose}
+│   │                 className="bg-accent-primary text-white font-bold py-2 px-8 rounded-md hover:opacity-90 transition-opacity"
+│   │               >
+│   │                 {t('close')}
+│   │               </button>
+│   │           </div>
+│   │         </div>
+│   │         <style>{`
+│   │           @keyframes fade-in-scale { from { opacity: 0; transform: scale(0.95); } to { opacity: 1; transform: scale(1); } }
+│   │           .animate-fade-in-scale { animation: fade-in-scale 0.3s ease-out forwards; }
+│   │         `}</style>
+│   │       </div>
+│   │       
+│   │       <ConflictedShotsModal
+│   │           isOpen={isConflictModalOpen}
+│   │           onClose={() => setConflictModalOpen(false)}
+│   │           details={summary.general_summary.conflicted_shot_details}
+│   │           theme={theme}
+│   │       />
+│   │   
+│   │       {selectedVibratorId && (
+│   │           <AIInsightModal 
+│   │               isOpen={isInsightModalOpen}
+│   │               onClose={() => setInsightModalOpen(false)}
+│   │               theme={theme}
+│   │               vibratorId={selectedVibratorId}
+│   │               records={recordsForInsight}
+│   │           />
+│   │       )}
+│   │       </>
+│   │     );
+│   │   };
+│   │   
+│   │   export default SummaryModal;
+│   ├── ThemeSwitcher.tsx
+│   │   import React from 'react';
+│   │   import { THEMES } from '../constants';
+│   │   import { Palette } from 'lucide-react';
+│   │   
+│   │   interface ThemeSwitcherProps {
+│   │     currentThemeName: string;
+│   │     setThemeName: (name: string) => void;
+│   │   }
+│   │   
+│   │   const ThemeSwitcher: React.FC<ThemeSwitcherProps> = ({ currentThemeName, setThemeName }) => {
+│   │     const themes = Object.keys(THEMES);
+│   │     
+│   │     const handleThemeChange = () => {
+│   │       const currentIndex = themes.indexOf(currentThemeName);
+│   │       const nextIndex = (currentIndex + 1) % themes.length;
+│   │       setThemeName(themes[nextIndex]);
+│   │     };
+│   │   
+│   │     if (themes.length <= 1) {
+│   │       return (
+│   │         <div className="flex items-center gap-2 text-text-secondary px-2">
+│   │           <Palette size={16} />
+│   │           <span className='text-sm font-medium'>{currentThemeName}</span>
+│   │         </div>
+│   │       )
+│   │     }
+│   │   
+│   │     return (
+│   │       <button
+│   │         onClick={handleThemeChange}
+│   │         className="flex items-center gap-3 p-2 rounded-md hover:bg-bg-tertiary"
+│   │         title={currentThemeName}
+│   │       >
+│   │         <Palette size={18} className='text-text-secondary' />
+│   │       </button>
+│   │     );
+│   │   };
+│   │   
+│   │   export default ThemeSwitcher;
+│   └── WelcomeScreen.tsx
+│       import React, { useRef, useEffect } from 'react';
+│       import { useI18n } from '../hooks/useI18n';
+│       import { ThemeColors } from '../types';
+│       
+│       interface WelcomeScreenProps {
+│         theme: ThemeColors;
+│       }
+│       
+│       const WelcomeScreen: React.FC<WelcomeScreenProps> = ({ theme }) => {
+│         const { t } = useI18n();
+│         const sketchRef = useRef<HTMLDivElement>(null);
+│         const p5InstanceRef = useRef<any>(null);
+│       
+│         useEffect(() => {
+│           if (!sketchRef.current) return;
+│       
+│           const sketch = (p: any) => {
+│             let currentTheme = theme;
+│             let angle = 0;
+│             let scannerRadius = 0;
+│             let dots: any[] = [];
+│             const numDots = 200;
+│       
+│             const hexToRgb = (hex: string) => {
+│                 const result = /^#?([a-f\d]{2})([a-f\d]{2})([a-f\d]{2})$/i.exec(hex);
+│                 return result ? {
+│                     r: parseInt(result[1], 16),
+│                     g: parseInt(result[2], 16),
+│                     b: parseInt(result[3], 16)
+│                 } : null;
+│             };
+│       
+│             p.setup = () => {
+│               p.createCanvas(sketchRef.current!.offsetWidth, sketchRef.current!.offsetHeight);
+│               p.noStroke();
+│               for (let i = 0; i < numDots; i++) {
+│                 dots.push({
+│                   x: p.random(p.width),
+│                   y: p.random(p.height),
+│                   size: p.random(1, 3),
+│                   alpha: p.random(20, 100)
+│                 });
+│               }
+│             };
+│       
+│             p.draw = () => {
+│               p.background(currentTheme.bg_secondary);
+│       
+│               const centerX = p.width / 2;
+│               const centerY = p.height / 2;
+│               const maxRadius = p.dist(0, 0, centerX, centerY);
+│       
+│               // Draw static dots
+│               const accentRgb = hexToRgb(currentTheme.accent_primary);
+│               if (accentRgb) {
+│                 dots.forEach(dot => {
+│                   p.fill(accentRgb.r, accentRgb.g, accentRgb.b, dot.alpha);
+│                   p.ellipse(dot.x, dot.y, dot.size, dot.size);
+│                 });
+│               }
+│       
+│               // Draw concentric circles
+│               for (let r = maxRadius; r > 0; r -= 50) {
+│                   p.noFill();
+│                   p.stroke(currentTheme.accent_primary + '1A'); // accent with low alpha
+│                   p.strokeWeight(1);
+│                   p.ellipse(centerX, centerY, r * 2, r * 2);
+│               }
+│       
+│               // Draw scanner
+│               angle += 0.02;
+│               scannerRadius = maxRadius;
+│       
+│               const x2 = centerX + scannerRadius * p.cos(angle);
+│               const y2 = centerY + scannerRadius * p.sin(angle);
+│               
+│               const gradient = p.drawingContext.createLinearGradient(centerX, centerY, x2, y2);
+│               gradient.addColorStop(0, currentTheme.accent_primary + '00');
+│               gradient.addColorStop(0.8, currentTheme.accent_primary + '80');
+│               gradient.addColorStop(1, currentTheme.accent_primary + 'FF');
+│               p.drawingContext.strokeStyle = gradient;
+│               p.strokeWeight(3);
+│               p.line(centerX, centerY, x2, y2);
+│       
+│               // Highlight dots under scanner
+│               dots.forEach(dot => {
+│                 let d = p.dist(centerX, centerY, dot.x, dot.y);
+│                 let a = p.atan2(dot.y - centerY, dot.x - centerX);
+│                 if (p.abs(a - angle) < 0.05 && d < scannerRadius) {
+│                    if (accentRgb) {
+│                       p.noStroke();
+│                       p.fill(accentRgb.r, accentRgb.g, accentRgb.b, 255);
+│                       p.ellipse(dot.x, dot.y, dot.size + 2, dot.size + 2);
+│                    }
+│                 }
+│               });
+│             };
+│       
+│             p.windowResized = () => {
+│               if (sketchRef.current) {
+│                 p.resizeCanvas(sketchRef.current.offsetWidth, sketchRef.current.offsetHeight);
+│                 dots = [];
+│                 for (let i = 0; i < numDots; i++) {
+│                   dots.push({
+│                     x: p.random(p.width),
+│                     y: p.random(p.height),
+│                     size: p.random(1, 3),
+│                     alpha: p.random(20, 100)
+│                   });
+│                 }
+│               }
+│             };
+│       
+│             p.updateWithTheme = (newTheme: ThemeColors) => {
+│               currentTheme = newTheme;
+│             };
+│           };
+│       
+│           p5InstanceRef.current = new window.p5(sketch, sketchRef.current);
+│       
+│           return () => {
+│             p5InstanceRef.current?.remove();
+│           };
+│         }, []);
+│       
+│         useEffect(() => {
+│           if (p5InstanceRef.current?.updateWithTheme) {
+│             p5InstanceRef.current.updateWithTheme(theme);
+│           }
+│         }, [theme]);
+│       
+│         return (
+│           <div className="relative w-full h-full overflow-hidden bg-bg-secondary flex justify-center items-center">
+│             <div ref={sketchRef} className="absolute inset-0 z-0" />
+│             <div className="relative z-10 flex flex-col justify-center items-center h-full text-center p-4 bg-transparent pointer-events-none">
+│               <h2 className="text-4xl font-bold text-text-primary mt-5 drop-shadow-lg animate-fade-in-scale" style={{ animationDelay: '0.2s' }}>{t('readyToAnalyze')}</h2>
+│               <p className="text-xl text-text-secondary mt-3 drop-shadow-lg animate-fade-in-scale" style={{ animationDelay: '0.4s' }}>
+│                 {t('dropFilesHint')}
+│               </p>
+│             </div>
+│             <style>{`
+│               @keyframes fade-in-scale {
+│                 from { opacity: 0; transform: scale(0.9); }
+│                 to { opacity: 1; transform: scale(1); }
+│               }
+│               .animate-fade-in-scale {
+│                 opacity: 0;
+│                 animation: fade-in-scale 0.5s ease-out forwards;
+│               }
+│             `}</style>
+│           </div>
+│         );
+│       };
+│       
+│       export default WelcomeScreen;
+├── constants.ts
+│   import { Themes, ThemeColors } from './types';
+│   
+│   export const DARK_THEME: ThemeColors = {
+│       "bg_primary": "#0D1117",
+│       "bg_secondary": "#161B22",
+│       "bg_tertiary": "#21262D",
+│       "text_primary": "#E6EDF3",
+│       "text_secondary": "#8B949E",
+│       "accent_primary": "#58A6FF",
+│       "accent_secondary": "#3FB950",
+│       "border": "#30363D",
+│       "warning": "#F0B429",
+│       "overload": "#F85149"
+│   };
+│   
+│   export const LIGHT_THEME: ThemeColors = {
+│       "bg_primary": "#FFFFFF",
+│       "bg_secondary": "#F7F9FC",
+│       "bg_tertiary": "#EFF3F8",
+│       "text_primary": "#0F172A",
+│       "text_secondary": "#64748B",
+│       "accent_primary": "#3B82F6",
+│       "accent_secondary": "#10B981",
+│       "border": "#E2E8F0",
+│       "warning": "#F59E0B",
+│       "overload": "#EF4444"
+│   };
+│   
+│   
+│   export const THEMES: Themes = {
+│       "Blueprint": DARK_THEME,
+│       "Daylight": LIGHT_THEME,
+│   };
+│   
+│   export const DEFAULT_THEME = "Daylight";
+├── hooks/
+│   └── useI18n.tsx
+│       import React, {
+│         createContext,
+│         useState,
+│         useContext,
+│         useEffect,
+│         useCallback,
+│         ReactNode,
+│         useMemo
+│       } from 'react';
+│       
+│       type Language = 'en' | 'fr';
+│       type Translations = Record<string, string>;
+│       
+│       interface I18nContextType {
+│         language: Language;
+│         setLanguage: (lang: Language) => void;
+│         t: (key: string, params?: { [key: string]: string | number }) => string;
+│       }
+│       
+│       export const I18nContext = createContext<I18nContextType | undefined>(undefined);
+│       
+│       const LANGUAGE_STORAGE_KEY = 'app_language';
+│       
+│       export const I18nProvider: React.FC<{ children: ReactNode }> = ({ children }) => {
+│         const [language, setLanguageState] = useState<Language>('en');
+│         const [translations, setTranslations] = useState<Record<Language, Translations> | null>(null);
+│         const [isLoading, setIsLoading] = useState(true);
+│         const [error, setError] = useState<string | null>(null);
+│       
+│         const setLanguage = (lang: Language) => {
+│           localStorage.setItem(LANGUAGE_STORAGE_KEY, lang);
+│           setLanguageState(lang);
+│         };
+│       
+│         useEffect(() => {
+│           const savedLang = localStorage.getItem(LANGUAGE_STORAGE_KEY) as Language | null;
+│           if (savedLang === 'en' || savedLang === 'fr') {
+│             setLanguageState(savedLang);
+│           }
+│       
+│           const fetchTranslations = async () => {
+│             try {
+│               const [enResponse, frResponse] = await Promise.all([
+│                 fetch('/locales/en.json'),
+│                 fetch('/locales/fr.json')
+│               ]);
+│       
+│               if (!enResponse.ok || !frResponse.ok) {
+│                 throw new Error(`Failed to load translation files. Status: ${enResponse.status}, ${frResponse.status}`);
+│               }
+│       
+│               const enData = await enResponse.json();
+│               const frData = await frResponse.json();
+│       
+│               setTranslations({ en: enData, fr: frData });
+│             } catch (err) {
+│               console.error("Error loading translations:", err);
+│               setError(err instanceof Error ? err.message : 'An unknown error occurred.');
+│             } finally {
+│               setIsLoading(false);
+│             }
+│           };
+│       
+│           fetchTranslations();
+│         }, []);
+│       
+│         const t = useCallback((key: string, params?: { [key: string]: string | number }) => {
+│           if (!translations) return key;
+│           let translation = translations[language][key] || translations.en[key] || key;
+│       
+│           if (params) {
+│             Object.keys(params).forEach(pKey => {
+│               const regex = new RegExp(`\\{${pKey}\\}`, 'g');
+│               translation = translation.replace(regex, String(params[pKey]));
+│             });
+│           }
+│           return translation;
+│         }, [language, translations]);
+│       
+│         const value = useMemo(() => ({ language, setLanguage, t }), [language, t]);
+│       
+│         if (isLoading) {
+│           return (
+│             <div style={{
+│               display: 'flex',
+│               justifyContent: 'center',
+│               alignItems: 'center',
+│               height: '100vh',
+│               backgroundColor: '#233140',
+│               color: '#ecf0f1',
+│               fontFamily: 'sans-serif',
+│               fontSize: '1.5rem'
+│             }}>
+│               Loading...
+│             </div>
+│           );
+│         }
+│       
+│         if (error) {
+│           return (
+│             <div style={{
+│               display: 'flex',
+│               justifyContent: 'center',
+│               alignItems: 'center',
+│               height: '100vh',
+│               padding: '2rem',
+│               backgroundColor: '#2b0000',
+│               color: '#ffc0cb',
+│               fontFamily: 'monospace',
+│               fontSize: '1rem',
+│               whiteSpace: 'pre-wrap'
+│             }}>
+│               Fatal Error: Could not load language files. Please check the console and ensure 'locales/en.json' and 'locales/fr.json' are accessible.
+│               <br /><br />
+│               Details: {error}
+│             </div>
+│           );
+│         }
+│       
+│         return (
+│           <I18nContext.Provider value={value}>
+│             {children}
+│           </I18nContext.Provider>
+│         );
+│       };
+│       
+│       export const useI18n = (): I18nContextType => {
+│         const context = useContext(I18nContext);
+│         if (context === undefined) {
+│           throw new Error('useI18n must be used within an I18nProvider');
+│         }
+│         return context;
+│       };
+├── index.html
+│   <!DOCTYPE html>
+│   <html lang="en">
+│     <head>
+│       <meta charset="UTF-8" />
+│       <link rel="icon" type="image/svg+xml" href="/vite.svg" />
+│       <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+│       <title>Intelligent Vibration Analyzer v2.2</title>
+│       <script src="https://cdn.tailwindcss.com"></script>
+│       <script src="https://cdn.jsdelivr.net/npm/p5@1.9.0/lib/p5.js"></script>
+│       <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+│       <link rel="stylesheet" href="https://unpkg.com/leaflet.markercluster@1.5.3/dist/MarkerCluster.css" />
+│       <link rel="stylesheet" href="https://unpkg.com/leaflet.markercluster@1.5.3/dist/MarkerCluster.Default.css" />
+│       <script src="https://unpkg.com/leaflet.heat@0.2.0/dist/leaflet-heat.js"></script>
+│       <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet.draw/1.0.4/leaflet.draw.css" />
+│       <link rel="stylesheet" href="https://unpkg.com/leaflet-geosearch@3/dist/geosearch.css" />
+│       <script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet.draw/1.0.4/leaflet.draw.js"></script>
+│       <script>
+│         tailwind.config = {
+│           theme: {
+│             extend: {
+│               colors: {
+│                 'bg-primary': 'var(--color-bg-primary)',
+│                 'bg-secondary': 'var(--color-bg-secondary)',
+│                 'bg-tertiary': 'var(--color-bg-tertiary)',
+│                 'text-primary': 'var(--color-text-primary)',
+│                 'text-secondary': 'var(--color-text-secondary)',
+│                 'accent-primary': 'var(--color-accent-primary)',
+│                 'accent-secondary': 'var(--color-accent-secondary)',
+│                 'border-color': 'var(--color-border)',
+│                 'overload': 'var(--color-overload)',
+│                 'warning': 'var(--color-warning)',
+│               }
+│             }
+│           }
+│         }
+│       </script>
+│     <script type="importmap">
+│   {
+│     "imports": {
+│       "react-dom": "https://esm.sh/react-dom@^19.1.0",
+│       "react-dom/": "https://esm.sh/react-dom@^19.1.0/",
+│       "react/": "https://esm.sh/react@^19.1.0/",
+│       "react": "https://esm.sh/react@^19.1.0",
+│       "@google/genai": "https://esm.sh/@google/genai@0.15.0",
+│       "lucide-react": "https://esm.sh/lucide-react@^0.525.0",
+│       "recharts": "https://esm.sh/recharts@^3.1.0",
+│       "p5": "https://esm.sh/p5@^2.0.3",
+│       "leaflet": "https://esm.sh/leaflet@1.9.4",
+│       "react-leaflet": "https://esm.sh/react-leaflet@4.2.1?external=react,react-dom,leaflet",
+│       "leaflet.markercluster": "https://esm.sh/leaflet.markercluster@1.5.3?external=leaflet",
+│       "leaflet-draw": "https://aistudiocdn.com/leaflet-draw@^1.0.4",
+│       "leaflet-geosearch": "https://esm.sh/leaflet-geosearch@3.11.0?external=leaflet",
+│       "@turf/helpers": "https://esm.sh/@turf/helpers@6.5.0",
+│       "vite": "https://aistudiocdn.com/vite@^7.1.4",
+│       "url": "https://aistudiocdn.com/url@^0.11.4",
+│       "leaflet-geometryutil": "https://aistudiocdn.com/leaflet-geometryutil@^0.10.3",
+│       "utm": "https://esm.sh/utm@1.1.1"
+│     }
+│   }
+│   </script>
+│   </head>
+│     <body class="bg-bg-primary">
+│       <div id="root"></div>
+│       <script type="module" src="/index.tsx"></script>
+│     </body>
+│   </html>
+├── index.tsx
+│   import React from 'react';
+│   import ReactDOM from 'react-dom/client';
+│   import App from './App';
+│   import { I18nProvider } from './hooks/useI18n';
+│   
+│   const rootElement = document.getElementById('root');
+│   if (!rootElement) {
+│     throw new Error("Could not find root element to mount to");
+│   }
+│   
+│   const root = ReactDOM.createRoot(rootElement);
+│   root.render(
+│     <React.StrictMode>
+│       <I18nProvider>
+│         <App />
+│       </I18nProvider>
+│     </React.StrictMode>
+│   );
+├── locales/
+│   ├── en.json
+│   │   {
+│   │     "vibrationAnalyzer": "Seismic Analyzer",
+│   │     "intelligentMonitoring": "Intelligent Monitoring",
+│   │     "addFiles": "Add Files...",
+│   │     "clearList": "Clear List",
+│   │     "showSummary": "Show Summary",
+│   │     "exportTxt": "Export TXT",
+│   │     "about": "About",
+│   │     "colorTheme": "Color Theme:",
+│   │     "readyToAnalyze": "Ready to Analyze",
+│   │     "dropFilesHint": "Add VAPS files using the button or Drag & Drop here.",
+│   │     "statistics": "Statistics",
+│   │     "chronology": "Chronology",
+│   │     "aboutTitle": "About the Intelligent Seismic Analyzer",
+│   │     "about_p1": "This analytical system was fully developed by me, independently and free of charge, for the benefit of my company, with the aim of enhancing precise monitoring and improving productivity.",
+│   │     "about_p2": "The core objective of the program is to track the performance of vibrators, identifying which units contributed the most to production. It also helps detect those that underperformed, allowing supervisors to investigate technical issues and resolve them efficiently.",
+│   │     "about_p3": "I am open to hearing about further technical or operational needs within the company, with the goal of developing additional digital solutions that support productivity and elevate overall performance.",
+│   │     "about_p4": "This version introduces a major feature: an interactive map to display vibration points.",
+│   │     "ddsi": "DDSI",
+│   │     "helpdesk": "HELPDESK",
+│   │     "author": "By: LEMMOUCHI",
+│   │     "version": "Version: 2.3",
+│   │     "close": "Close",
+│   │     "analysisReport": "Analysis Report",
+│   │     "sourceFile": "Source",
+│   │     "generated": "Generated",
+│   │     "totalVibrators": "Total Vibrators",
+│   │     "netOperations": "Net Operations",
+│   │     "totalDuplicates": "Total Duplicates",
+│   │     "totalDuration": "Total Duration",
+│   │     "individualPerformance": "Individual Performance",
+│   │     "vibroId": "Vibrator ID",
+│   │     "totalOps": "Total Ops",
+│   │     "netOps": "Net Ops",
+│   │     "duplicates": "Duplicates",
+│   │     "firstOp": "First Op",
+│   │     "lastOp": "Last Op",
+│   │     "totalVibrationYLabel": "Total Number of Vibrations (VP)",
+│   │     "totalDurationYLabel": "Total Operation Duration (seconds)",
+│   │     "totalVibrationsLegend": "Total Vibration",
+│   │     "totalDurationLegend": "Total Duration (s)",
+│   │     "operationalChronology": "Operational Chronology",
+│   │     "operationalRangeLegend": "Operational Range",
+│   │     "noChronoData": "No chronological data to display.",
+│   │     "analysisErrorBody": "An error occurred during analysis: {error}",
+│   │     "emptyDataBody": "No valid data found in the file.",
+│   │     "pinPanel": "Pin panel",
+│   │     "unpinPanel": "Unpin panel",
+│   │     "mapView": "Map View",
+│   │     "satellite": "Satellite",
+│   │     "terrain": "Terrain",
+│   │     "fullscreen": "Fullscreen",
+│   │     "vibratorList": "Vibrator List",
+│   │     "noGpsData": "No valid GPS or coordinate data available in the file.",
+│   │     "mapError": "Map data is incomplete or missing. Cannot display map.",
+│   │     "mapDataError": "An error occurred while preparing map data. Some points may be missing.",
+│   │     "time": "Time",
+│   │     "latitude": "Lat",
+│   │     "longitude": "Lon",
+│   │     "popup_vibrator": "Vibrator",
+│   │     "popup_line": "Line",
+│   │     "popup_point": "Point",
+│   │     "popup_shotNb": "Shot Nb",
+│   │     "popup_avgForce": "Avg Force",
+│   │     "popup_avgPhase": "Avg Phase",
+│   │     "popup_avgDist": "Avg Dist",
+│   │     "popup_status": "Status",
+│   │     "showAll": "Show All",
+│   │     "googleEarth": "Google Earth",
+│   │     "returnToProgramInterface": "Return to Program Interface",
+│   │     "generateAiReport": "Generate AI Report",
+│   │     "aiReport": "AI-Generated Report",
+│   │     "generating": "Generating...",
+│   │     "aiReportDescription": "AI analysis of the performance summary. Provides a narrative overview, highlights top performers, identifies issues, and offers recommendations.",
+│   │     "diagnoseIssues": "Diagnose",
+│   │     "aiDiagnosisTitle": "AI Diagnosis",
+│   │     "diagnosisFor": "Diagnosis for",
+│   │     "actions": "Actions",
+│   │     "aiApiError": "An error occurred while communicating with the AI. Please try again later.",
+│   │     "noIssuesDetected": "The AI analyzed the data and found no significant performance issues for this vibrator. It is operating within normal parameters.",
+│   │     "fetchingDiagnosis": "Fetching diagnosis...",
+│   │     "exportKMLForAll": "Export KML for All Points",
+│   │     "exportKMLForSelection": "Export KML for Selection",
+│   │     "exportSelection": "Export Selection",
+│   │     "filterPoints": "Filter Points",
+│   │     "status": "Status",
+│   │     "apply": "Apply",
+│   │     "reset": "Reset",
+│   │     "generatingStatus": "Generating...",
+│   │     "ok": "OK",
+│   │     "warning": "Warning",
+│   │     "overload": "Overload",
+│   │     "elevation": "Elevation (m)",
+│   │     "value": "Value",
+│   │     "heatmap": "Heatmap",
+│   │     "slope": "Slope",
+│   │     "aspect": "Aspect",
+│   │     "tools": "Tools",
+│   │     "select": "Select",
+│   │     "measureDistance": "Measure Distance",
+│   │     "measureArea": "Measure Area",
+│   │     "queryData": "Query Data",
+│   │     "queryByAttribute": "By Attribute",
+│   │     "queryByShape": "By Shape",
+│   │     "selectByRectangle": "Select by Rectangle",
+│   │     "clearSelection": "Clear Selection",
+│   │     "searchLabelPlaceholder": "Search for a location...",
+│   │     "avgForce": "Average Force",
+│   │     "greaterThan": "Greater than",
+│   │     "lessThan": "Less than",
+│   │     "equals": "Equals",
+│   │     "noPointsSelected": "No points selected.",
+│   │     "pointsSelected": "{count} points selected.",
+│   │     "exportGeoJSON": "Export GeoJSON",
+│   │     "startMeasurement": "Click on the map to start measuring.",
+│   │     "distance": "Distance",
+│   │     "area": "Area",
+│   │     "clear": "Clear",
+│   │     "filesSelected_one": "{count} file selected",
+│   │     "filesSelected_other": "{count} files selected",
+│   │     "totalPointsLoaded": "{count} total points loaded successfully.",
+│   │     "failedToLoadPoints": "Failed to load points.",
+│   │     "streetMap": "Streets",
+│   │     "controlPanel": "Control Panel",
+│   │     "conflictedShots": "Conflicted Shots",
+│   │     "conflictedOps": "Conflicts",
+│   │     "conflictedShotsDetailTitle": "Multi-Vibrator Shot Details",
+│   │     "shotNumber": "Shot Number",
+│   │     "vibratorsInvolved": "Vibrators Involved",
+│   │     "parsingFile": "Parsing file...",
+│   │     "pleaseWait": "This may take a moment for large files."
+│   │   }
+│   └── fr.json
+│       {
+│         "vibrationAnalyzer": "Analyseur Sismique",
+│         "intelligentMonitoring": "Surveillance Intelligente",
+│         "addFiles": "Ajouter Fichiers...",
+│         "clearList": "Vider la Liste",
+│         "showSummary": "Afficher Résumé",
+│         "exportTxt": "Exporter TXT",
+│         "about": "À Propos",
+│         "colorTheme": "Thème de Couleur :",
+│         "readyToAnalyze": "Prêt à Analyser",
+│         "dropFilesHint": "Ajoutez des fichiers VAPS avec le bouton ou par glisser-déposer.",
+│         "statistics": "Statistiques",
+│         "chronology": "Chronologie",
+│         "aboutTitle": "À Propos de l'Analyseur Sismique Intelligent",
+│         "about_p1": "Ce système d'analyse a été entièrement développé par mes soins, de manière indépendante et à titre gracieux, pour le bénéfice de mon entreprise, dans le but de renforcer le suivi précis et d'améliorer la productivité.",
+│         "about_p2": "L'objectif principal du programme est de suivre les performances des vibreurs, en identifiant les unités qui ont le plus contribué à la production. Il aide également à détecter celles qui ont sous-performé, permettant aux superviseurs d'enquêter sur les problèmes techniques et de les résoudre efficacement.",
+│         "about_p3": "Je suis ouvert à entendre parler d'autres besoins techniques ou opérationnels au sein de l'entreprise, dans le but de développer des solutions numériques supplémentaires qui soutiennent la productivité et élèvent les performances globales.",
+│         "about_p4": "Cette version introduit une fonctionnalité majeure : une carte interactive pour afficher les points de vibration.",
+│         "ddsi": "DDSI",
+│         "helpdesk": "HELPDESK",
+│         "author": "Par : LEMMOUCHI",
+│         "version": "Version : 2.3",
+│         "close": "Fermer",
+│         "analysisReport": "Rapport d'Analyse",
+│         "sourceFile": "Source",
+│         "generated": "Généré",
+│         "totalVibrators": "Total Vibreurs",
+│         "netOperations": "Opérations Nettes",
+│         "totalDuplicates": "Total Doublons",
+│         "totalDuration": "Durée Totale",
+│         "individualPerformance": "Performance Individuelle",
+│         "vibroId": "ID Vibreur",
+│         "totalOps": "Ops Total",
+│         "netOps": "Ops Nettes",
+│         "duplicates": "Doublons",
+│         "firstOp": "Première Op",
+│         "lastOp": "Dernière Op",
+│         "totalVibrationYLabel": "Nombre Total de Vibrations (VP)",
+│         "totalDurationYLabel": "Durée Totale d'Opération (secondes)",
+│         "totalVibrationsLegend": "Vibrations Totales",
+│         "totalDurationLegend": "Durée Totale (s)",
+│         "operationalChronology": "Chronologie Opérationnelle",
+│         "operationalRangeLegend": "Plage Opérationnelle",
+│         "noChronoData": "Pas de données chronologiques à afficher.",
+│         "analysisErrorBody": "Une erreur est survenue lors de l'analyse : {error}",
+│         "emptyDataBody": "Aucune donnée valide trouvée dans le fichier.",
+│         "pinPanel": "Épingler le panneau",
+│         "unpinPanel": "Détacher le panneau",
+│         "mapView": "Vue Carte",
+│         "satellite": "Satellite",
+│         "terrain": "Terrain",
+│         "fullscreen": "Plein Écran",
+│         "vibratorList": "Liste des Vibreurs",
+│         "noGpsData": "Aucune donnée GPS ou de coordonnées valide disponible dans le fichier.",
+│         "mapError": "Les données de la carte sont incomplètes ou manquantes. Impossible d'afficher la carte.",
+│         "mapDataError": "Une erreur est survenue lors de la préparation des données de la carte. Certains points peuvent manquer.",
+│         "time": "Heure",
+│         "latitude": "Lat",
+│         "longitude": "Lon",
+│         "popup_vibrator": "Vibreur",
+│         "popup_line": "Ligne",
+│         "popup_point": "Point",
+│         "popup_shotNb": "Tir Nb",
+│         "popup_avgForce": "Force Moy",
+│         "popup_avgPhase": "Phase Moy",
+│         "popup_avgDist": "Dist Moy",
+│         "popup_status": "Statut",
+│         "showAll": "Tout Afficher",
+│         "googleEarth": "Google Earth",
+│         "returnToProgramInterface": "Retour à l'Interface du Programme",
+│         "generateAiReport": "Générer Rapport IA",
+│         "aiReport": "Rapport Généré par IA",
+│         "generating": "Génération...",
+│         "aiReportDescription": "Analyse par IA du résumé des performances. Fournit un aperçu narratif, met en évidence les plus performants, identifie les problèmes et propose des recommandations.",
+│         "diagnoseIssues": "Diagnostiquer",
+│         "aiDiagnosisTitle": "Diagnostic IA",
+│         "diagnosisFor": "Diagnostic pour",
+│         "actions": "Actions",
+│         "aiApiError": "Une erreur est survenue lors de la communication avec l'IA. Veuillez réessayer plus tard.",
+│         "noIssuesDetected": "L'IA a analysé les données et n'a trouvé aucun problème de performance significatif pour ce vibreur. Il fonctionne dans les paramètres normaux.",
+│         "fetchingDiagnosis": "Récupération du diagnostic...",
+│         "exportKMLForAll": "Exporter KML pour Tous les Points",
+│         "exportKMLForSelection": "Exporter KML pour la Sélection",
+│         "exportSelection": "Exporter Sélection",
+│         "filterPoints": "Filtrer les Points",
+│         "status": "Statut",
+│         "apply": "Appliquer",
+│         "reset": "Réinitialiser",
+│         "generatingStatus": "Génération...",
+│         "ok": "OK",
+│         "warning": "Avertissement",
+│         "overload": "Surcharge",
+│         "elevation": "Élévation (m)",
+│         "value": "Valeur",
+│         "heatmap": "Carte de Chaleur",
+│         "slope": "Pente",
+│         "aspect": "Aspect",
+│         "tools": "Outils",
+│         "select": "Sélectionner",
+│         "measureDistance": "Mesurer la distance",
+│         "measureArea": "Mesurer la surface",
+│         "queryData": "Interroger les Données",
+│         "queryByAttribute": "Par Attribut",
+│         "queryByShape": "Par Forme",
+│         "selectByRectangle": "Sélectionner par Rectangle",
+│         "clearSelection": "Effacer la Sélection",
+│         "searchLabelPlaceholder": "Rechercher un lieu...",
+│         "avgForce": "Force Moyenne",
+│         "greaterThan": "Plus grand que",
+│         "lessThan": "Moins que",
+│         "equals": "Égal à",
+│         "noPointsSelected": "Aucun point sélectionné.",
+│         "pointsSelected": "{count} points sélectionnés.",
+│         "exportGeoJSON": "Exporter GeoJSON",
+│         "startMeasurement": "Cliquez sur la carte pour commencer à mesurer.",
+│         "distance": "Distance",
+│         "area": "Surface",
+│         "clear": "Effacer",
+│         "filesSelected_one": "{count} fichier sélectionné",
+│         "filesSelected_other": "{count} fichiers sélectionnés",
+│         "totalPointsLoaded": "{count} points au total chargés avec succès.",
+│         "failedToLoadPoints": "Échec du chargement des points.",
+│         "streetMap": "Rues",
+│         "controlPanel": "Panneau de Contrôle",
+│         "conflictedShots": "Tirs Conflictuels",
+│         "conflictedOps": "Conflits",
+│         "conflictedShotsDetailTitle": "Détails des Tirs Multi-Vibreurs",
+│         "shotNumber": "Numéro de Tir",
+│         "vibratorsInvolved": "Vibreurs Impliqués",
+│         "parsingFile": "Analyse du fichier en cours...",
+│         "pleaseWait": "Cela peut prendre un moment pour les fichiers volumineux."
+│       }
+├── metadata.json
+│   {
+│     "name": "Intelligent Seismic Analyzer v6",
+│     "description": "A web-based tool to analyze, visualize, and report on seismic survey data from VAPS vibration files for comprehensive operational intelligence.",
+│     "requestFramePermissions": [],
+│     "prompt": ""
+│   }
+├── package-lock.json
+│   {
+│     "name": "intelligent-vibration-analyzer",
+│     "version": "0.0.0",
+│     "lockfileVersion": 3,
+│     "requires": true,
+│     "packages": {
+│       "": {
+│         "name": "intelligent-vibration-analyzer",
+│         "version": "0.0.0",
+│         "dependencies": {
+│           "lucide-react": "^0.525.0",
+│           "react": "^19.1.0",
+│           "react-dom": "^19.1.0",
+│           "recharts": "^3.1.0"
+│         },
+│         "devDependencies": {
+│           "@types/node": "^22.14.0",
+│           "typescript": "~5.7.2",
+│           "vite": "^6.2.0"
+│         }
+│       },
+│       "node_modules/@esbuild/aix-ppc64": {
+│         "version": "0.25.6",
+│         "resolved": "https://registry.npmjs.org/@esbuild/aix-ppc64/-/aix-ppc64-0.25.6.tgz",
+│         "integrity": "sha512-ShbM/3XxwuxjFiuVBHA+d3j5dyac0aEVVq1oluIDf71hUw0aRF59dV/efUsIwFnR6m8JNM2FjZOzmaZ8yG61kw==",
+│         "cpu": [
+│           "ppc64"
+│         ],
+│         "dev": true,
+│         "license": "MIT",
+│         "optional": true,
+│         "os": [
+│           "aix"
+│         ],
+│         "engines": {
+│           "node": ">=18"
+│         }
+│       },
+│       "node_modules/@esbuild/android-arm": {
+│         "version": "0.25.6",
+│         "resolved": "https://registry.npmjs.org/@esbuild/android-arm/-/android-arm-0.25.6.tgz",
+│         "integrity": "sha512-S8ToEOVfg++AU/bHwdksHNnyLyVM+eMVAOf6yRKFitnwnbwwPNqKr3srzFRe7nzV69RQKb5DgchIX5pt3L53xg==",
+│         "cpu": [
+│           "arm"
+│         ],
+│         "dev": true,
+│         "license": "MIT",
+│         "optional": true,
+│         "os": [
+│           "android"
+│         ],
+│         "engines": {
+│           "node": ">=18"
+│         }
+│       },
+│       "node_modules/@esbuild/android-arm64": {
+│         "version": "0.25.6",
+│         "resolved": "https://registry.npmjs.org/@esbuild/android-arm64/-/android-arm64-0.25.6.tgz",
+│         "integrity": "sha512-hd5zdUarsK6strW+3Wxi5qWws+rJhCCbMiC9QZyzoxfk5uHRIE8T287giQxzVpEvCwuJ9Qjg6bEjcRJcgfLqoA==",
+│         "cpu": [
+│           "arm64"
+│         ],
+│         "dev": true,
+│         "license": "MIT",
+│         "optional": true,
+│         "os": [
+│           "android"
+│         ],
+│         "engines": {
+│           "node": ">=18"
+│         }
+│       },
+│       "node_modules/@esbuild/android-x64": {
+│         "version": "0.25.6",
+│         "resolved": "https://registry.npmjs.org/@esbuild/android-x64/-/android-x64-0.25.6.tgz",
+│         "integrity": "sha512-0Z7KpHSr3VBIO9A/1wcT3NTy7EB4oNC4upJ5ye3R7taCc2GUdeynSLArnon5G8scPwaU866d3H4BCrE5xLW25A==",
+│         "cpu": [
+│           "x64"
+│         ],
+│         "dev": true,
+│         "license": "MIT",
+│         "optional": true,
+│         "os": [
+│           "android"
+│         ],
+│         "engines": {
+│           "node": ">=18"
+│         }
+│       },
+│       "node_modules/@esbuild/darwin-arm64": {
+│         "version": "0.25.6",
+│         "resolved": "https://registry.npmjs.org/@esbuild/darwin-arm64/-/darwin-arm64-0.25.6.tgz",
+│         "integrity": "sha512-FFCssz3XBavjxcFxKsGy2DYK5VSvJqa6y5HXljKzhRZ87LvEi13brPrf/wdyl/BbpbMKJNOr1Sd0jtW4Ge1pAA==",
+│         "cpu": [
+│           "arm64"
+│         ],
+│         "dev": true,
+│         "license": "MIT",
+│         "optional": true,
+│         "os": [
+│           "darwin"
+│         ],
+│         "engines": {
+│           "node": ">=18"
+│         }
+│       },
+│       "node_modules/@esbuild/darwin-x64": {
+│         "version": "0.25.6",
+│         "resolved": "https://registry.npmjs.org/@esbuild/darwin-x64/-/darwin-x64-0.25.6.tgz",
+│         "integrity": "sha512-GfXs5kry/TkGM2vKqK2oyiLFygJRqKVhawu3+DOCk7OxLy/6jYkWXhlHwOoTb0WqGnWGAS7sooxbZowy+pK9Yg==",
+│         "cpu": [
+│           "x64"
+│         ],
+│         "dev": true,
+│         "license": "MIT",
+│         "optional": true,
+│         "os": [
+│           "darwin"
+│         ],
+│         "engines": {
+│           "node": ">=18"
+│         }
+│       },
+│       "node_modules/@esbuild/freebsd-arm64": {
+│         "version": "0.25.6",
+│         "resolved": "https://registry.npmjs.org/@esbuild/freebsd-arm64/-/freebsd-arm64-0.25.6.tgz",
+│         "integrity": "sha512-aoLF2c3OvDn2XDTRvn8hN6DRzVVpDlj2B/F66clWd/FHLiHaG3aVZjxQX2DYphA5y/evbdGvC6Us13tvyt4pWg==",
+│         "cpu": [
+│           "arm64"
+│         ],
+│         "dev": true,
+│         "license": "MIT",
+│         "optional": true,
+│         "os": [
+│           "freebsd"
+│         ],
+│         "engines": {
+│           "node": ">=18"
+│         }
+│       },
+│       "node_modules/@esbuild/freebsd-x64": {
+│         "version": "0.25.6",
+│         "resolved": "https://registry.npmjs.org/@esbuild/freebsd-x64/-/freebsd-x64-0.25.6.tgz",
+│         "integrity": "sha512-2SkqTjTSo2dYi/jzFbU9Plt1vk0+nNg8YC8rOXXea+iA3hfNJWebKYPs3xnOUf9+ZWhKAaxnQNUf2X9LOpeiMQ==",
+│         "cpu": [
+│           "x64"
+│         ],
+│         "dev": true,
+│         "license": "MIT",
+│         "optional": true,
+│         "os": [
+│           "freebsd"
+│         ],
+│         "engines": {
+│           "node": ">=18"
+│         }
+│       },
+│       "node_modules/@esbuild/linux-arm": {
+│         "version": "0.25.6",
+│         "resolved": "https://registry.npmjs.org/@esbuild/linux-arm/-/linux-arm-0.25.6.tgz",
+│         "integrity": "sha512-SZHQlzvqv4Du5PrKE2faN0qlbsaW/3QQfUUc6yO2EjFcA83xnwm91UbEEVx4ApZ9Z5oG8Bxz4qPE+HFwtVcfyw==",
+│         "cpu": [
+│           "arm"
+│         ],
+│         "dev": true,
+│         "license": "MIT",
+│         "optional": true,
+│         "os": [
+│           "linux"
+│         ],
+│         "engines": {
+│           "node": ">=18"
+│         }
+│       },
+│       "node_modules/@esbuild/linux-arm64": {
+│         "version": "0.25.6",
+│         "resolved": "https://registry.npmjs.org/@esbuild/linux-arm64/-/linux-arm64-0.25.6.tgz",
+│         "integrity": "sha512-b967hU0gqKd9Drsh/UuAm21Khpoh6mPBSgz8mKRq4P5mVK8bpA+hQzmm/ZwGVULSNBzKdZPQBRT3+WuVavcWsQ==",
+│         "cpu": [
+│           "arm64"
+│         ],
+│         "dev": true,
+│         "license": "MIT",
+│         "optional": true,
+│         "os": [
+│           "linux"
+│         ],
+│         "engines": {
+│           "node": ">=18"
+│         }
+│       },
+│       "node_modules/@esbuild/linux-ia32": {
+│         "version": "0.25.6",
+│         "resolved": "https://registry.npmjs.org/@esbuild/linux-ia32/-/linux-ia32-0.25.6.tgz",
+│         "integrity": "sha512-aHWdQ2AAltRkLPOsKdi3xv0mZ8fUGPdlKEjIEhxCPm5yKEThcUjHpWB1idN74lfXGnZ5SULQSgtr5Qos5B0bPw==",
+│         "cpu": [
+│           "ia32"
+│         ],
+│         "dev": true,
+│         "license": "MIT",
+│         "optional": true,
+│         "os": [
+│           "linux"
+│         ],
+│         "engines": {
+│           "node": ">=18"
+│         }
+│       },
+│       "node_modules/@esbuild/linux-loong64": {
+│         "version": "0.25.6",
+│         "resolved": "https://registry.npmjs.org/@esbuild/linux-loong64/-/linux-loong64-0.25.6.tgz",
+│         "integrity": "sha512-VgKCsHdXRSQ7E1+QXGdRPlQ/e08bN6WMQb27/TMfV+vPjjTImuT9PmLXupRlC90S1JeNNW5lzkAEO/McKeJ2yg==",
+│         "cpu": [
+│           "loong64"
+│         ],
+│         "dev": true,
+│         "license": "MIT",
+│         "optional": true,
+│         "os": [
+│           "linux"
+│         ],
+│         "engines": {
+│           "node": ">=18"
+│         }
+│       },
+│       "node_modules/@esbuild/linux-mips64el": {
+│         "version": "0.25.6",
+│         "resolved": "https://registry.npmjs.org/@esbuild/linux-mips64el/-/linux-mips64el-0.25.6.tgz",
+│         "integrity": "sha512-WViNlpivRKT9/py3kCmkHnn44GkGXVdXfdc4drNmRl15zVQ2+D2uFwdlGh6IuK5AAnGTo2qPB1Djppj+t78rzw==",
+│         "cpu": [
+│           "mips64el"
+│         ],
+│         "dev": true,
+│         "license": "MIT",
+│         "optional": true,
+│         "os": [
+│           "linux"
+│         ],
+│         "engines": {
+│           "node": ">=18"
+│         }
+│       },
+│       "node_modules/@esbuild/linux-ppc64": {
+│         "version": "0.25.6",
+│         "resolved": "https://registry.npmjs.org/@esbuild/linux-ppc64/-/linux-ppc64-0.25.6.tgz",
+│         "integrity": "sha512-wyYKZ9NTdmAMb5730I38lBqVu6cKl4ZfYXIs31Baf8aoOtB4xSGi3THmDYt4BTFHk7/EcVixkOV2uZfwU3Q2Jw==",
+│         "cpu": [
+│           "ppc64"
+│         ],
+│         "dev": true,
+│         "license": "MIT",
+│         "optional": true,
+│         "os": [
+│           "linux"
+│         ],
+│         "engines": {
+│           "node": ">=18"
+│         }
+│       },
+│       "node_modules/@esbuild/linux-riscv64": {
+│         "version": "0.25.6",
+│         "resolved": "https://registry.npmjs.org/@esbuild/linux-riscv64/-/linux-riscv64-0.25.6.tgz",
+│         "integrity": "sha512-KZh7bAGGcrinEj4qzilJ4hqTY3Dg2U82c8bv+e1xqNqZCrCyc+TL9AUEn5WGKDzm3CfC5RODE/qc96OcbIe33w==",
+│         "cpu": [
+│           "riscv64"
+│         ],
+│         "dev": true,
+│         "license": "MIT",
+│         "optional": true,
+│         "os": [
+│           "linux"
+│         ],
+│         "engines": {
+│           "node": ">=18"
+│         }
+│       },
+│       "node_modules/@esbuild/linux-s390x": {
+│         "version": "0.25.6",
+│         "resolved": "https://registry.npmjs.org/@esbuild/linux-s390x/-/linux-s390x-0.25.6.tgz",
+│         "integrity": "sha512-9N1LsTwAuE9oj6lHMyyAM+ucxGiVnEqUdp4v7IaMmrwb06ZTEVCIs3oPPplVsnjPfyjmxwHxHMF8b6vzUVAUGw==",
+│         "cpu": [
+│           "s390x"
+│         ],
+│         "dev": true,
+│         "license": "MIT",
+│         "optional": true,
+│         "os": [
+│           "linux"
+│         ],
+│         "engines": {
+│           "node": ">=18"
+│         }
+│       },
+│       "node_modules/@esbuild/linux-x64": {
+│         "version": "0.25.6",
+│         "resolved": "https://registry.npmjs.org/@esbuild/linux-x64/-/linux-x64-0.25.6.tgz",
+│         "integrity": "sha512-A6bJB41b4lKFWRKNrWoP2LHsjVzNiaurf7wyj/XtFNTsnPuxwEBWHLty+ZE0dWBKuSK1fvKgrKaNjBS7qbFKig==",
+│         "cpu": [
+│           "x64"
+│         ],
+│         "dev": true,
+│         "license": "MIT",
+│         "optional": true,
+│         "os": [
+│           "linux"
+│         ],
+│         "engines": {
+│           "node": ">=18"
+│         }
+│       },
+│       "node_modules/@esbuild/netbsd-arm64": {
+│         "version": "0.25.6",
+│         "resolved": "https://registry.npmjs.org/@esbuild/netbsd-arm64/-/netbsd-arm64-0.25.6.tgz",
+│         "integrity": "sha512-IjA+DcwoVpjEvyxZddDqBY+uJ2Snc6duLpjmkXm/v4xuS3H+3FkLZlDm9ZsAbF9rsfP3zeA0/ArNDORZgrxR/Q==",
+│         "cpu": [
+│           "arm64"
+│         ],
+│         "dev": true,
+│         "license": "MIT",
+│         "optional": true,
+│         "os": [
+│           "netbsd"
+│         ],
+│         "engines": {
+│           "node": ">=18"
+│         }
+│       },
+│       "node_modules/@esbuild/netbsd-x64": {
+│         "version": "0.25.6",
+│         "resolved": "https://registry.npmjs.org/@esbuild/netbsd-x64/-/netbsd-x64-0.25.6.tgz",
+│         "integrity": "sha512-dUXuZr5WenIDlMHdMkvDc1FAu4xdWixTCRgP7RQLBOkkGgwuuzaGSYcOpW4jFxzpzL1ejb8yF620UxAqnBrR9g==",
+│         "cpu": [
+│           "x64"
+│         ],
+│         "dev": true,
+│         "license": "MIT",
+│         "optional": true,
+│         "os": [
+│           "netbsd"
+│         ],
+│         "engines": {
+│           "node": ">=18"
+│         }
+│       },
+│       "node_modules/@esbuild/openbsd-arm64": {
+│         "version": "0.25.6",
+│         "resolved": "https://registry.npmjs.org/@esbuild/openbsd-arm64/-/openbsd-arm64-0.25.6.tgz",
+│         "integrity": "sha512-l8ZCvXP0tbTJ3iaqdNf3pjaOSd5ex/e6/omLIQCVBLmHTlfXW3zAxQ4fnDmPLOB1x9xrcSi/xtCWFwCZRIaEwg==",
+│         "cpu": [
+│           "arm64"
+│         ],
+│         "dev": true,
+│         "license": "MIT",
+│         "optional": true,
+│         "os": [
+│           "openbsd"
+│         ],
+│         "engines": {
+│           "node": ">=18"
+│         }
+│       },
+│       "node_modules/@esbuild/openbsd-x64": {
+│         "version": "0.25.6",
+│         "resolved": "https://registry.npmjs.org/@esbuild/openbsd-x64/-/openbsd-x64-0.25.6.tgz",
+│         "integrity": "sha512-hKrmDa0aOFOr71KQ/19JC7az1P0GWtCN1t2ahYAf4O007DHZt/dW8ym5+CUdJhQ/qkZmI1HAF8KkJbEFtCL7gw==",
+│         "cpu": [
+│           "x64"
+│         ],
+│         "dev": true,
+│         "license": "MIT",
+│         "optional": true,
+│         "os": [
+│           "openbsd"
+│         ],
+│         "engines": {
+│           "node": ">=18"
+│         }
+│       },
+│       "node_modules/@esbuild/openharmony-arm64": {
+│         "version": "0.25.6",
+│         "resolved": "https://registry.npmjs.org/@esbuild/openharmony-arm64/-/openharmony-arm64-0.25.6.tgz",
+│         "integrity": "sha512-+SqBcAWoB1fYKmpWoQP4pGtx+pUUC//RNYhFdbcSA16617cchuryuhOCRpPsjCblKukAckWsV+aQ3UKT/RMPcA==",
+│         "cpu": [
+│           "arm64"
+│         ],
+│         "dev": true,
+│         "license": "MIT",
+│         "optional": true,
+│         "os": [
+│           "openharmony"
+│         ],
+│         "engines": {
+│           "node": ">=18"
+│         }
+│       },
+│       "node_modules/@esbuild/sunos-x64": {
+│         "version": "0.25.6",
+│         "resolved": "https://registry.npmjs.org/@esbuild/sunos-x64/-/sunos-x64-0.25.6.tgz",
+│         "integrity": "sha512-dyCGxv1/Br7MiSC42qinGL8KkG4kX0pEsdb0+TKhmJZgCUDBGmyo1/ArCjNGiOLiIAgdbWgmWgib4HoCi5t7kA==",
+│         "cpu": [
+│           "x64"
+│         ],
+│         "dev": true,
+│         "license": "MIT",
+│         "optional": true,
+│         "os": [
+│           "sunos"
+│         ],
+│         "engines": {
+│           "node": ">=18"
+│         }
+│       },
+│       "node_modules/@esbuild/win32-arm64": {
+│         "version": "0.25.6",
+│         "resolved": "https://registry.npmjs.org/@esbuild/win32-arm64/-/win32-arm64-0.25.6.tgz",
+│         "integrity": "sha512-42QOgcZeZOvXfsCBJF5Afw73t4veOId//XD3i+/9gSkhSV6Gk3VPlWncctI+JcOyERv85FUo7RxuxGy+z8A43Q==",
+│         "cpu": [
+│           "arm64"
+│         ],
+│         "dev": true,
+│         "license": "MIT",
+│         "optional": true,
+│         "os": [
+│           "win32"
+│         ],
+│         "engines": {
+│           "node": ">=18"
+│         }
+│       },
+│       "node_modules/@esbuild/win32-ia32": {
+│         "version": "0.25.6",
+│         "resolved": "https://registry.npmjs.org/@esbuild/win32-ia32/-/win32-ia32-0.25.6.tgz",
+│         "integrity": "sha512-4AWhgXmDuYN7rJI6ORB+uU9DHLq/erBbuMoAuB4VWJTu5KtCgcKYPynF0YI1VkBNuEfjNlLrFr9KZPJzrtLkrQ==",
+│         "cpu": [
+│           "ia32"
+│         ],
+│         "dev": true,
+│         "license": "MIT",
+│         "optional": true,
+│         "os": [
+│           "win32"
+│         ],
+│         "engines": {
+│           "node": ">=18"
+│         }
+│       },
+│       "node_modules/@esbuild/win32-x64": {
+│         "version": "0.25.6",
+│         "resolved": "https://registry.npmjs.org/@esbuild/win32-x64/-/win32-x64-0.25.6.tgz",
+│         "integrity": "sha512-NgJPHHbEpLQgDH2MjQu90pzW/5vvXIZ7KOnPyNBm92A6WgZ/7b6fJyUBjoumLqeOQQGqY2QjQxRo97ah4Sj0cA==",
+│         "cpu": [
+│           "x64"
+│         ],
+│         "dev": true,
+│         "license": "MIT",
+│         "optional": true,
+│         "os": [
+│           "win32"
+│         ],
+│         "engines": {
+│           "node": ">=18"
+│         }
+│       },
+│       "node_modules/@reduxjs/toolkit": {
+│         "version": "2.8.2",
+│         "resolved": "https://registry.npmjs.org/@reduxjs/toolkit/-/toolkit-2.8.2.tgz",
+│         "integrity": "sha512-MYlOhQ0sLdw4ud48FoC5w0dH9VfWQjtCjreKwYTT3l+r427qYC5Y8PihNutepr8XrNaBUDQo9khWUwQxZaqt5A==",
+│         "license": "MIT",
+│         "dependencies": {
+│           "@standard-schema/spec": "^1.0.0",
+│           "@standard-schema/utils": "^0.3.0",
+│           "immer": "^10.0.3",
+│           "redux": "^5.0.1",
+│           "redux-thunk": "^3.1.0",
+│           "reselect": "^5.1.0"
+│         },
+│         "peerDependencies": {
+│           "react": "^16.9.0 || ^17.0.0 || ^18 || ^19",
+│           "react-redux": "^7.2.1 || ^8.1.3 || ^9.0.0"
+│         },
+│         "peerDependenciesMeta": {
+│           "react": {
+│             "optional": true
+│           },
+│           "react-redux": {
+│             "optional": true
+│           }
+│         }
+│       },
+│       "node_modules/@rollup/rollup-android-arm-eabi": {
+│         "version": "4.45.0",
+│         "resolved": "https://registry.npmjs.org/@rollup/rollup-android-arm-eabi/-/rollup-android-arm-eabi-4.45.0.tgz",
+│         "integrity": "sha512-2o/FgACbji4tW1dzXOqAV15Eu7DdgbKsF2QKcxfG4xbh5iwU7yr5RRP5/U+0asQliSYv5M4o7BevlGIoSL0LXg==",
+│         "cpu": [
+│           "arm"
+│         ],
+│         "dev": true,
+│         "license": "MIT",
+│         "optional": true,
+│         "os": [
+│           "android"
+│         ]
+│       },
+│       "node_modules/@rollup/rollup-android-arm64": {
+│         "version": "4.45.0",
+│         "resolved": "https://registry.npmjs.org/@rollup/rollup-android-arm64/-/rollup-android-arm64-4.45.0.tgz",
+│         "integrity": "sha512-PSZ0SvMOjEAxwZeTx32eI/j5xSYtDCRxGu5k9zvzoY77xUNssZM+WV6HYBLROpY5CkXsbQjvz40fBb7WPwDqtQ==",
+│         "cpu": [
+│           "arm64"
+│         ],
+│         "dev": true,
+│         "license": "MIT",
+│         "optional": true,
+│         "os": [
+│           "android"
+│         ]
+│       },
+│       "node_modules/@rollup/rollup-darwin-arm64": {
+│         "version": "4.45.0",
+│         "resolved": "https://registry.npmjs.org/@rollup/rollup-darwin-arm64/-/rollup-darwin-arm64-4.45.0.tgz",
+│         "integrity": "sha512-BA4yPIPssPB2aRAWzmqzQ3y2/KotkLyZukVB7j3psK/U3nVJdceo6qr9pLM2xN6iRP/wKfxEbOb1yrlZH6sYZg==",
+│         "cpu": [
+│           "arm64"
+│         ],
+│         "dev": true,
+│         "license": "MIT",
+│         "optional": true,
+│         "os": [
+│           "darwin"
+│         ]
+│       },
+│       "node_modules/@rollup/rollup-darwin-x64": {
+│         "version": "4.45.0",
+│         "resolved": "https://registry.npmjs.org/@rollup/rollup-darwin-x64/-/rollup-darwin-x64-4.45.0.tgz",
+│         "integrity": "sha512-Pr2o0lvTwsiG4HCr43Zy9xXrHspyMvsvEw4FwKYqhli4FuLE5FjcZzuQ4cfPe0iUFCvSQG6lACI0xj74FDZKRA==",
+│         "cpu": [
+│           "x64"
+│         ],
+│         "dev": true,
+│         "license": "MIT",
+│         "optional": true,
+│         "os": [
+│           "darwin"
+│         ]
+│       },
+│       "node_modules/@rollup/rollup-freebsd-arm64": {
+│         "version": "4.45.0",
+│         "resolved": "https://registry.npmjs.org/@rollup/rollup-freebsd-arm64/-/rollup-freebsd-arm64-4.45.0.tgz",
+│         "integrity": "sha512-lYE8LkE5h4a/+6VnnLiL14zWMPnx6wNbDG23GcYFpRW1V9hYWHAw9lBZ6ZUIrOaoK7NliF1sdwYGiVmziUF4vA==",
+│         "cpu": [
+│           "arm64"
+│         ],
+│         "dev": true,
+│         "license": "MIT",
+│         "optional": true,
+│         "os": [
+│           "freebsd"
+│         ]
+│       },
+│       "node_modules/@rollup/rollup-freebsd-x64": {
+│         "version": "4.45.0",
+│         "resolved": "https://registry.npmjs.org/@rollup/rollup-freebsd-x64/-/rollup-freebsd-x64-4.45.0.tgz",
+│         "integrity": "sha512-PVQWZK9sbzpvqC9Q0GlehNNSVHR+4m7+wET+7FgSnKG3ci5nAMgGmr9mGBXzAuE5SvguCKJ6mHL6vq1JaJ/gvw==",
+│         "cpu": [
+│           "x64"
+│         ],
+│         "dev": true,
+│         "license": "MIT",
+│         "optional": true,
+│         "os": [
+│           "freebsd"
+│         ]
+│       },
+│       "node_modules/@rollup/rollup-linux-arm-gnueabihf": {
+│         "version": "4.45.0",
+│         "resolved": "https://registry.npmjs.org/@rollup/rollup-linux-arm-gnueabihf/-/rollup-linux-arm-gnueabihf-4.45.0.tgz",
+│         "integrity": "sha512-hLrmRl53prCcD+YXTfNvXd776HTxNh8wPAMllusQ+amcQmtgo3V5i/nkhPN6FakW+QVLoUUr2AsbtIRPFU3xIA==",
+│         "cpu": [
+│           "arm"
+│         ],
+│         "dev": true,
+│         "license": "MIT",
+│         "optional": true,
+│         "os": [
+│           "linux"
+│         ]
+│       },
+│       "node_modules/@rollup/rollup-linux-arm-musleabihf": {
+│         "version": "4.45.0",
+│         "resolved": "https://registry.npmjs.org/@rollup/rollup-linux-arm-musleabihf/-/rollup-linux-arm-musleabihf-4.45.0.tgz",
+│         "integrity": "sha512-XBKGSYcrkdiRRjl+8XvrUR3AosXU0NvF7VuqMsm7s5nRy+nt58ZMB19Jdp1RdqewLcaYnpk8zeVs/4MlLZEJxw==",
+│         "cpu": [
+│           "arm"
+│         ],
+│         "dev": true,
+│         "license": "MIT",
+│         "optional": true,
+│         "os": [
+│           "linux"
+│         ]
+│       },
+│       "node_modules/@rollup/rollup-linux-arm64-gnu": {
+│         "version": "4.45.0",
+│         "resolved": "https://registry.npmjs.org/@rollup/rollup-linux-arm64-gnu/-/rollup-linux-arm64-gnu-4.45.0.tgz",
+│         "integrity": "sha512-fRvZZPUiBz7NztBE/2QnCS5AtqLVhXmUOPj9IHlfGEXkapgImf4W9+FSkL8cWqoAjozyUzqFmSc4zh2ooaeF6g==",
+│         "cpu": [
+│           "arm64"
+│         ],
+│         "dev": true,
+│         "license": "MIT",
+│         "optional": true,
+│         "os": [
+│           "linux"
+│         ]
+│       },
+│       "node_modules/@rollup/rollup-linux-arm64-musl": {
+│         "version": "4.45.0",
+│         "resolved": "https://registry.npmjs.org/@rollup/rollup-linux-arm64-musl/-/rollup-linux-arm64-musl-4.45.0.tgz",
+│         "integrity": "sha512-Btv2WRZOcUGi8XU80XwIvzTg4U6+l6D0V6sZTrZx214nrwxw5nAi8hysaXj/mctyClWgesyuxbeLylCBNauimg==",
+│         "cpu": [
+│           "arm64"
+│         ],
+│         "dev": true,
+│         "license": "MIT",
+│         "optional": true,
+│         "os": [
+│           "linux"
+│         ]
+│       },
+│       "node_modules/@rollup/rollup-linux-loongarch64-gnu": {
+│         "version": "4.45.0",
+│         "resolved": "https://registry.npmjs.org/@rollup/rollup-linux-loongarch64-gnu/-/rollup-linux-loongarch64-gnu-4.45.0.tgz",
+│         "integrity": "sha512-Li0emNnwtUZdLwHjQPBxn4VWztcrw/h7mgLyHiEI5Z0MhpeFGlzaiBHpSNVOMB/xucjXTTcO+dhv469Djr16KA==",
+│         "cpu": [
+│           "loong64"
+│         ],
+│         "dev": true,
+│         "license": "MIT",
+│         "optional": true,
+│         "os": [
+│           "linux"
+│         ]
+│       },
+│       "node_modules/@rollup/rollup-linux-powerpc64le-gnu": {
+│         "version": "4.45.0",
+│         "resolved": "https://registry.npmjs.org/@rollup/rollup-linux-powerpc64le-gnu/-/rollup-linux-powerpc64le-gnu-4.45.0.tgz",
+│         "integrity": "sha512-sB8+pfkYx2kvpDCfd63d5ScYT0Fz1LO6jIb2zLZvmK9ob2D8DeVqrmBDE0iDK8KlBVmsTNzrjr3G1xV4eUZhSw==",
+│         "cpu": [
+│           "ppc64"
+│         ],
+│         "dev": true,
+│         "license": "MIT",
+│         "optional": true,
+│         "os": [
+│           "linux"
+│         ]
+│       },
+│       "node_modules/@rollup/rollup-linux-riscv64-gnu": {
+│         "version": "4.45.0",
+│         "resolved": "https://registry.npmjs.org/@rollup/rollup-linux-riscv64-gnu/-/rollup-linux-riscv64-gnu-4.45.0.tgz",
+│         "integrity": "sha512-5GQ6PFhh7E6jQm70p1aW05G2cap5zMOvO0se5JMecHeAdj5ZhWEHbJ4hiKpfi1nnnEdTauDXxPgXae/mqjow9w==",
+│         "cpu": [
+│           "riscv64"
+│         ],
+│         "dev": true,
+│         "license": "MIT",
+│         "optional": true,
+│         "os": [
+│           "linux"
+│         ]
+│       },
+│       "node_modules/@rollup/rollup-linux-riscv64-musl": {
+│         "version": "4.45.0",
+│         "resolved": "https://registry.npmjs.org/@rollup/rollup-linux-riscv64-musl/-/rollup-linux-riscv64-musl-4.45.0.tgz",
+│         "integrity": "sha512-N/euLsBd1rekWcuduakTo/dJw6U6sBP3eUq+RXM9RNfPuWTvG2w/WObDkIvJ2KChy6oxZmOSC08Ak2OJA0UiAA==",
+│         "cpu": [
+│           "riscv64"
+│         ],
+│         "dev": true,
+│         "license": "MIT",
+│         "optional": true,
+│         "os": [
+│           "linux"
+│         ]
+│       },
+│       "node_modules/@rollup/rollup-linux-s390x-gnu": {
+│         "version": "4.45.0",
+│         "resolved": "https://registry.npmjs.org/@rollup/rollup-linux-s390x-gnu/-/rollup-linux-s390x-gnu-4.45.0.tgz",
+│         "integrity": "sha512-2l9sA7d7QdikL0xQwNMO3xURBUNEWyHVHfAsHsUdq+E/pgLTUcCE+gih5PCdmyHmfTDeXUWVhqL0WZzg0nua3g==",
+│         "cpu": [
+│           "s390x"
+│         ],
+│         "dev": true,
+│         "license": "MIT",
+│         "optional": true,
+│         "os": [
+│           "linux"
+│         ]
+│       },
+│       "node_modules/@rollup/rollup-linux-x64-gnu": {
+│         "version": "4.45.0",
+│         "resolved": "https://registry.npmjs.org/@rollup/rollup-linux-x64-gnu/-/rollup-linux-x64-gnu-4.45.0.tgz",
+│         "integrity": "sha512-XZdD3fEEQcwG2KrJDdEQu7NrHonPxxaV0/w2HpvINBdcqebz1aL+0vM2WFJq4DeiAVT6F5SUQas65HY5JDqoPw==",
+│         "cpu": [
+│           "x64"
+│         ],
+│         "dev": true,
+│         "license": "MIT",
+│         "optional": true,
+│         "os": [
+│           "linux"
+│         ]
+│       },
+│       "node_modules/@rollup/rollup-linux-x64-musl": {
+│         "version": "4.45.0",
+│         "resolved": "https://registry.npmjs.org/@rollup/rollup-linux-x64-musl/-/rollup-linux-x64-musl-4.45.0.tgz",
+│         "integrity": "sha512-7ayfgvtmmWgKWBkCGg5+xTQ0r5V1owVm67zTrsEY1008L5ro7mCyGYORomARt/OquB9KY7LpxVBZes+oSniAAQ==",
+│         "cpu": [
+│           "x64"
+│         ],
+│         "dev": true,
+│         "license": "MIT",
+│         "optional": true,
+│         "os": [
+│           "linux"
+│         ]
+│       },
+│       "node_modules/@rollup/rollup-win32-arm64-msvc": {
+│         "version": "4.45.0",
+│         "resolved": "https://registry.npmjs.org/@rollup/rollup-win32-arm64-msvc/-/rollup-win32-arm64-msvc-4.45.0.tgz",
+│         "integrity": "sha512-B+IJgcBnE2bm93jEW5kHisqvPITs4ddLOROAcOc/diBgrEiQJJ6Qcjby75rFSmH5eMGrqJryUgJDhrfj942apQ==",
+│         "cpu": [
+│           "arm64"
+│         ],
+│         "dev": true,
+│         "license": "MIT",
+│         "optional": true,
+│         "os": [
+│           "win32"
+│         ]
+│       },
+│       "node_modules/@rollup/rollup-win32-ia32-msvc": {
+│         "version": "4.45.0",
+│         "resolved": "https://registry.npmjs.org/@rollup/rollup-win32-ia32-msvc/-/rollup-win32-ia32-msvc-4.45.0.tgz",
+│         "integrity": "sha512-+CXwwG66g0/FpWOnP/v1HnrGVSOygK/osUbu3wPRy8ECXjoYKjRAyfxYpDQOfghC5qPJYLPH0oN4MCOjwgdMug==",
+│         "cpu": [
+│           "ia32"
+│         ],
+│         "dev": true,
+│         "license": "MIT",
+│         "optional": true,
+│         "os": [
+│           "win32"
+│         ]
+│       },
+│       "node_modules/@rollup/rollup-win32-x64-msvc": {
+│         "version": "4.45.0",
+│         "resolved": "https://registry.npmjs.org/@rollup/rollup-win32-x64-msvc/-/rollup-win32-x64-msvc-4.45.0.tgz",
+│         "integrity": "sha512-SRf1cytG7wqcHVLrBc9VtPK4pU5wxiB/lNIkNmW2ApKXIg+RpqwHfsaEK+e7eH4A1BpI6BX/aBWXxZCIrJg3uA==",
+│         "cpu": [
+│           "x64"
+│         ],
+│         "dev": true,
+│         "license": "MIT",
+│         "optional": true,
+│         "os": [
+│           "win32"
+│         ]
+│       },
+│       "node_modules/@standard-schema/spec": {
+│         "version": "1.0.0",
+│         "resolved": "https://registry.npmjs.org/@standard-schema/spec/-/spec-1.0.0.tgz",
+│         "integrity": "sha512-m2bOd0f2RT9k8QJx1JN85cZYyH1RqFBdlwtkSlf4tBDYLCiiZnv1fIIwacK6cqwXavOydf0NPToMQgpKq+dVlA==",
+│         "license": "MIT"
+│       },
+│       "node_modules/@standard-schema/utils": {
+│         "version": "0.3.0",
+│         "resolved": "https://registry.npmjs.org/@standard-schema/utils/-/utils-0.3.0.tgz",
+│         "integrity": "sha512-e7Mew686owMaPJVNNLs55PUvgz371nKgwsc4vxE49zsODpJEnxgxRo2y/OKrqueavXgZNMDVj3DdHFlaSAeU8g==",
+│         "license": "MIT"
+│       },
+│       "node_modules/@types/d3-array": {
+│         "version": "3.2.1",
+│         "resolved": "https://registry.npmjs.org/@types/d3-array/-/d3-array-3.2.1.tgz",
+│         "integrity": "sha512-Y2Jn2idRrLzUfAKV2LyRImR+y4oa2AntrgID95SHJxuMUrkNXmanDSed71sRNZysveJVt1hLLemQZIady0FpEg==",
+│         "license": "MIT"
+│       },
+│       "node_modules/@types/d3-color": {
+│         "version": "3.1.3",
+│         "resolved": "https://registry.npmjs.org/@types/d3-color/-/d3-color-3.1.3.tgz",
+│         "integrity": "sha512-iO90scth9WAbmgv7ogoq57O9YpKmFBbmoEoCHDB2xMBY0+/KVrqAaCDyCE16dUspeOvIxFFRI+0sEtqDqy2b4A==",
+│         "license": "MIT"
+│       },
+│       "node_modules/@types/d3-ease": {
+│         "version": "3.0.2",
+│         "resolved": "https://registry.npmjs.org/@types/d3-ease/-/d3-ease-3.0.2.tgz",
+│         "integrity": "sha512-NcV1JjO5oDzoK26oMzbILE6HW7uVXOHLQvHshBUW4UMdZGfiY6v5BeQwh9a9tCzv+CeefZQHJt5SRgK154RtiA==",
+│         "license": "MIT"
+│       },
+│       "node_modules/@types/d3-interpolate": {
+│         "version": "3.0.4",
+│         "resolved": "https://registry.npmjs.org/@types/d3-interpolate/-/d3-interpolate-3.0.4.tgz",
+│         "integrity": "sha512-mgLPETlrpVV1YRJIglr4Ez47g7Yxjl1lj7YKsiMCb27VJH9W8NVM6Bb9d8kkpG/uAQS5AmbA48q2IAolKKo1MA==",
+│         "license": "MIT",
+│         "dependencies": {
+│           "@types/d3-color": "*"
+│         }
+│       },
+│       "node_modules/@types/d3-path": {
+│         "version": "3.1.1",
+│         "resolved": "https://registry.npmjs.org/@types/d3-path/-/d3-path-3.1.1.tgz",
+│         "integrity": "sha512-VMZBYyQvbGmWyWVea0EHs/BwLgxc+MKi1zLDCONksozI4YJMcTt8ZEuIR4Sb1MMTE8MMW49v0IwI5+b7RmfWlg==",
+│         "license": "MIT"
+│       },
+│       "node_modules/@types/d3-scale": {
+│         "version": "4.0.9",
+│         "resolved": "https://registry.npmjs.org/@types/d3-scale/-/d3-scale-4.0.9.tgz",
+│         "integrity": "sha512-dLmtwB8zkAeO/juAMfnV+sItKjlsw2lKdZVVy6LRr0cBmegxSABiLEpGVmSJJ8O08i4+sGR6qQtb6WtuwJdvVw==",
+│         "license": "MIT",
+│         "dependencies": {
+│           "@types/d3-time": "*"
+│         }
+│       },
+│       "node_modules/@types/d3-shape": {
+│         "version": "3.1.7",
+│         "resolved": "https://registry.npmjs.org/@types/d3-shape/-/d3-shape-3.1.7.tgz",
+│         "integrity": "sha512-VLvUQ33C+3J+8p+Daf+nYSOsjB4GXp19/S/aGo60m9h1v6XaxjiT82lKVWJCfzhtuZ3yD7i/TPeC/fuKLLOSmg==",
+│         "license": "MIT",
+│         "dependencies": {
+│           "@types/d3-path": "*"
+│         }
+│       },
+│       "node_modules/@types/d3-time": {
+│         "version": "3.0.4",
+│         "resolved": "https://registry.npmjs.org/@types/d3-time/-/d3-time-3.0.4.tgz",
+│         "integrity": "sha512-yuzZug1nkAAaBlBBikKZTgzCeA+k1uy4ZFwWANOfKw5z5LRhV0gNA7gNkKm7HoK+HRN0wX3EkxGk0fpbWhmB7g==",
+│         "license": "MIT"
+│       },
+│       "node_modules/@types/d3-timer": {
+│         "version": "3.0.2",
+│         "resolved": "https://registry.npmjs.org/@types/d3-timer/-/d3-timer-3.0.2.tgz",
+│         "integrity": "sha512-Ps3T8E8dZDam6fUyNiMkekK3XUsaUEik+idO9/YjPtfj2qruF8tFBXS7XhtE4iIXBLxhmLjP3SXpLhVf21I9Lw==",
+│         "license": "MIT"
+│       },
+│       "node_modules/@types/estree": {
+│         "version": "1.0.8",
+│         "resolved": "https://registry.npmjs.org/@types/estree/-/estree-1.0.8.tgz",
+│         "integrity": "sha512-dWHzHa2WqEXI/O1E9OjrocMTKJl2mSrEolh1Iomrv6U+JuNwaHXsXx9bLu5gG7BUWFIN0skIQJQ/L1rIex4X6w==",
+│         "dev": true,
+│         "license": "MIT"
+│       },
+│       "node_modules/@types/node": {
+│         "version": "22.16.3",
+│         "resolved": "https://registry.npmjs.org/@types/node/-/node-22.16.3.tgz",
+│         "integrity": "sha512-sr4Xz74KOUeYadexo1r8imhRtlVXcs+j3XK3TcoiYk7B1t3YRVJgtaD3cwX73NYb71pmVuMLNRhJ9XKdoDB74g==",
+│         "dev": true,
+│         "license": "MIT",
+│         "dependencies": {
+│           "undici-types": "~6.21.0"
+│         }
+│       },
+│       "node_modules/@types/use-sync-external-store": {
+│         "version": "0.0.6",
+│         "resolved": "https://registry.npmjs.org/@types/use-sync-external-store/-/use-sync-external-store-0.0.6.tgz",
+│         "integrity": "sha512-zFDAD+tlpf2r4asuHEj0XH6pY6i0g5NeAHPn+15wk3BV6JA69eERFXC1gyGThDkVa1zCyKr5jox1+2LbV/AMLg==",
+│         "license": "MIT"
+│       },
+│       "node_modules/clsx": {
+│         "version": "2.1.1",
+│         "resolved": "https://registry.npmjs.org/clsx/-/clsx-2.1.1.tgz",
+│         "integrity": "sha512-eYm0QWBtUrBWZWG0d386OGAw16Z995PiOVo2B7bjWSbHedGl5e0ZWaq65kOGgUSNesEIDkB9ISbTg/JK9dhCZA==",
+│         "license": "MIT",
+│         "engines": {
+│           "node": ">=6"
+│         }
+│       },
+│       "node_modules/d3-array": {
+│         "version": "3.2.4",
+│         "resolved": "https://registry.npmjs.org/d3-array/-/d3-array-3.2.4.tgz",
+│         "integrity": "sha512-tdQAmyA18i4J7wprpYq8ClcxZy3SC31QMeByyCFyRt7BVHdREQZ5lpzoe5mFEYZUWe+oq8HBvk9JjpibyEV4Jg==",
+│         "license": "ISC",
+│         "dependencies": {
+│           "internmap": "1 - 2"
+│         },
+│         "engines": {
+│           "node": ">=12"
+│         }
+│       },
+│       "node_modules/d3-color": {
+│         "version": "3.1.0",
+│         "resolved": "https://registry.npmjs.org/d3-color/-/d3-color-3.1.0.tgz",
+│         "integrity": "sha512-zg/chbXyeBtMQ1LbD/WSoW2DpC3I0mpmPdW+ynRTj/x2DAWYrIY7qeZIHidozwV24m4iavr15lNwIwLxRmOxhA==",
+│         "license": "ISC",
+│         "engines": {
+│           "node": ">=12"
+│         }
+│       },
+│       "node_modules/d3-ease": {
+│         "version": "3.0.1",
+│         "resolved": "https://registry.npmjs.org/d3-ease/-/d3-ease-3.0.1.tgz",
+│         "integrity": "sha512-wR/XK3D3XcLIZwpbvQwQ5fK+8Ykds1ip7A2Txe0yxncXSdq1L9skcG7blcedkOX+ZcgxGAmLX1FrRGbADwzi0w==",
+│         "license": "BSD-3-Clause",
+│         "engines": {
+│           "node": ">=12"
+│         }
+│       },
+│       "node_modules/d3-format": {
+│         "version": "3.1.0",
+│         "resolved": "https://registry.npmjs.org/d3-format/-/d3-format-3.1.0.tgz",
+│         "integrity": "sha512-YyUI6AEuY/Wpt8KWLgZHsIU86atmikuoOmCfommt0LYHiQSPjvX2AcFc38PX0CBpr2RCyZhjex+NS/LPOv6YqA==",
+│         "license": "ISC",
+│         "engines": {
+│           "node": ">=12"
+│         }
+│       },
+│       "node_modules/d3-interpolate": {
+│         "version": "3.0.1",
+│         "resolved": "https://registry.npmjs.org/d3-interpolate/-/d3-interpolate-3.0.1.tgz",
+│         "integrity": "sha512-3bYs1rOD33uo8aqJfKP3JWPAibgw8Zm2+L9vBKEHJ2Rg+viTR7o5Mmv5mZcieN+FRYaAOWX5SJATX6k1PWz72g==",
+│         "license": "ISC",
+│         "dependencies": {
+│           "d3-color": "1 - 3"
+│         },
+│         "engines": {
+│           "node": ">=12"
+│         }
+│       },
+│       "node_modules/d3-path": {
+│         "version": "3.1.0",
+│         "resolved": "https://registry.npmjs.org/d3-path/-/d3-path-3.1.0.tgz",
+│         "integrity": "sha512-p3KP5HCf/bvjBSSKuXid6Zqijx7wIfNW+J/maPs+iwR35at5JCbLUT0LzF1cnjbCHWhqzQTIN2Jpe8pRebIEFQ==",
+│         "license": "ISC",
+│         "engines": {
+│           "node": ">=12"
+│         }
+│       },
+│       "node_modules/d3-scale": {
+│         "version": "4.0.2",
+│         "resolved": "https://registry.npmjs.org/d3-scale/-/d3-scale-4.0.2.tgz",
+│         "integrity": "sha512-GZW464g1SH7ag3Y7hXjf8RoUuAFIqklOAq3MRl4OaWabTFJY9PN/E1YklhXLh+OQ3fM9yS2nOkCoS+WLZ6kvxQ==",
+│         "license": "ISC",
+│         "dependencies": {
+│           "d3-array": "2.10.0 - 3",
+│           "d3-format": "1 - 3",
+│           "d3-interpolate": "1.2.0 - 3",
+│           "d3-time": "2.1.1 - 3",
+│           "d3-time-format": "2 - 4"
+│         },
+│         "engines": {
+│           "node": ">=12"
+│         }
+│       },
+│       "node_modules/d3-shape": {
+│         "version": "3.2.0",
+│         "resolved": "https://registry.npmjs.org/d3-shape/-/d3-shape-3.2.0.tgz",
+│         "integrity": "sha512-SaLBuwGm3MOViRq2ABk3eLoxwZELpH6zhl3FbAoJ7Vm1gofKx6El1Ib5z23NUEhF9AsGl7y+dzLe5Cw2AArGTA==",
+│         "license": "ISC",
+│         "dependencies": {
+│           "d3-path": "^3.1.0"
+│         },
+│         "engines": {
+│           "node": ">=12"
+│         }
+│       },
+│       "node_modules/d3-time": {
+│         "version": "3.1.0",
+│         "resolved": "https://registry.npmjs.org/d3-time/-/d3-time-3.1.0.tgz",
+│         "integrity": "sha512-VqKjzBLejbSMT4IgbmVgDjpkYrNWUYJnbCGo874u7MMKIWsILRX+OpX/gTk8MqjpT1A/c6HY2dCA77ZN0lkQ2Q==",
+│         "license": "ISC",
+│         "dependencies": {
+│           "d3-array": "2 - 3"
+│         },
+│         "engines": {
+│           "node": ">=12"
+│         }
+│       },
+│       "node_modules/d3-time-format": {
+│         "version": "4.1.0",
+│         "resolved": "https://registry.npmjs.org/d3-time-format/-/d3-time-format-4.1.0.tgz",
+│         "integrity": "sha512-dJxPBlzC7NugB2PDLwo9Q8JiTR3M3e4/XANkreKSUxF8vvXKqm1Yfq4Q5dl8budlunRVlUUaDUgFt7eA8D6NLg==",
+│         "license": "ISC",
+│         "dependencies": {
+│           "d3-time": "1 - 3"
+│         },
+│         "engines": {
+│           "node": ">=12"
+│         }
+│       },
+│       "node_modules/d3-timer": {
+│         "version": "3.0.1",
+│         "resolved": "https://registry.npmjs.org/d3-timer/-/d3-timer-3.0.1.tgz",
+│         "integrity": "sha512-ndfJ/JxxMd3nw31uyKoY2naivF+r29V+Lc0svZxe1JvvIRmi8hUsrMvdOwgS1o6uBHmiz91geQ0ylPP0aj1VUA==",
+│         "license": "ISC",
+│         "engines": {
+│           "node": ">=12"
+│         }
+│       },
+│       "node_modules/decimal.js-light": {
+│         "version": "2.5.1",
+│         "resolved": "https://registry.npmjs.org/decimal.js-light/-/decimal.js-light-2.5.1.tgz",
+│         "integrity": "sha512-qIMFpTMZmny+MMIitAB6D7iVPEorVw6YQRWkvarTkT4tBeSLLiHzcwj6q0MmYSFCiVpiqPJTJEYIrpcPzVEIvg==",
+│         "license": "MIT"
+│       },
+│       "node_modules/es-toolkit": {
+│         "version": "1.39.7",
+│         "resolved": "https://registry.npmjs.org/es-toolkit/-/es-toolkit-1.39.7.tgz",
+│         "integrity": "sha512-ek/wWryKouBrZIjkwW2BFf91CWOIMvoy2AE5YYgUrfWsJQM2Su1LoLtrw8uusEpN9RfqLlV/0FVNjT0WMv8Bxw==",
+│         "license": "MIT",
+│         "workspaces": [
+│           "docs",
+│           "benchmarks"
+│         ]
+│       },
+│       "node_modules/esbuild": {
+│         "version": "0.25.6",
+│         "resolved": "https://registry.npmjs.org/esbuild/-/esbuild-0.25.6.tgz",
+│         "integrity": "sha512-GVuzuUwtdsghE3ocJ9Bs8PNoF13HNQ5TXbEi2AhvVb8xU1Iwt9Fos9FEamfoee+u/TOsn7GUWc04lz46n2bbTg==",
+│         "dev": true,
+│         "hasInstallScript": true,
+│         "license": "MIT",
+│         "bin": {
+│           "esbuild": "bin/esbuild"
+│         },
+│         "engines": {
+│           "node": ">=18"
+│         },
+│         "optionalDependencies": {
+│           "@esbuild/aix-ppc64": "0.25.6",
+│           "@esbuild/android-arm": "0.25.6",
+│           "@esbuild/android-arm64": "0.25.6",
+│           "@esbuild/android-x64": "0.25.6",
+│           "@esbuild/darwin-arm64": "0.25.6",
+│           "@esbuild/darwin-x64": "0.25.6",
+│           "@esbuild/freebsd-arm64": "0.25.6",
+│           "@esbuild/freebsd-x64": "0.25.6",
+│           "@esbuild/linux-arm": "0.25.6",
+│           "@esbuild/linux-arm64": "0.25.6",
+│           "@esbuild/linux-ia32": "0.25.6",
+│           "@esbuild/linux-loong64": "0.25.6",
+│           "@esbuild/linux-mips64el": "0.25.6",
+│           "@esbuild/linux-ppc64": "0.25.6",
+│           "@esbuild/linux-riscv64": "0.25.6",
+│           "@esbuild/linux-s390x": "0.25.6",
+│           "@esbuild/linux-x64": "0.25.6",
+│           "@esbuild/netbsd-arm64": "0.25.6",
+│           "@esbuild/netbsd-x64": "0.25.6",
+│           "@esbuild/openbsd-arm64": "0.25.6",
+│           "@esbuild/openbsd-x64": "0.25.6",
+│           "@esbuild/openharmony-arm64": "0.25.6",
+│           "@esbuild/sunos-x64": "0.25.6",
+│           "@esbuild/win32-arm64": "0.25.6",
+│           "@esbuild/win32-ia32": "0.25.6",
+│           "@esbuild/win32-x64": "0.25.6"
+│         }
+│       },
+│       "node_modules/eventemitter3": {
+│         "version": "5.0.1",
+│         "resolved": "https://registry.npmjs.org/eventemitter3/-/eventemitter3-5.0.1.tgz",
+│         "integrity": "sha512-GWkBvjiSZK87ELrYOSESUYeVIc9mvLLf/nXalMOS5dYrgZq9o5OVkbZAVM06CVxYsCwH9BDZFPlQTlPA1j4ahA==",
+│         "license": "MIT"
+│       },
+│       "node_modules/fdir": {
+│         "version": "6.4.6",
+│         "resolved": "https://registry.npmjs.org/fdir/-/fdir-6.4.6.tgz",
+│         "integrity": "sha512-hiFoqpyZcfNm1yc4u8oWCf9A2c4D3QjCrks3zmoVKVxpQRzmPNar1hUJcBG2RQHvEVGDN+Jm81ZheVLAQMK6+w==",
+│         "dev": true,
+│         "license": "MIT",
+│         "peerDependencies": {
+│           "picomatch": "^3 || ^4"
+│         },
+│         "peerDependenciesMeta": {
+│           "picomatch": {
+│             "optional": true
+│           }
+│         }
+│       },
+│       "node_modules/fsevents": {
+│         "version": "2.3.3",
+│         "resolved": "https://registry.npmjs.org/fsevents/-/fsevents-2.3.3.tgz",
+│         "integrity": "sha512-5xoDfX+fL7faATnagmWPpbFtwh/R77WmMMqqHGS65C3vvB0YHrgF+B1YmZ3441tMj5n63k0212XNoJwzlhffQw==",
+│         "dev": true,
+│         "hasInstallScript": true,
+│         "license": "MIT",
+│         "optional": true,
+│         "os": [
+│           "darwin"
+│         ],
+│         "engines": {
+│           "node": "^8.16.0 || ^10.6.0 || >=11.0.0"
+│         }
+│       },
+│       "node_modules/immer": {
+│         "version": "10.1.1",
+│         "resolved": "https://registry.npmjs.org/immer/-/immer-10.1.1.tgz",
+│         "integrity": "sha512-s2MPrmjovJcoMaHtx6K11Ra7oD05NT97w1IC5zpMkT6Atjr7H8LjaDd81iIxUYpMKSRRNMJE703M1Fhr/TctHw==",
+│         "license": "MIT",
+│         "funding": {
+│           "type": "opencollective",
+│           "url": "https://opencollective.com/immer"
+│         }
+│       },
+│       "node_modules/internmap": {
+│         "version": "2.0.3",
+│         "resolved": "https://registry.npmjs.org/internmap/-/internmap-2.0.3.tgz",
+│         "integrity": "sha512-5Hh7Y1wQbvY5ooGgPbDaL5iYLAPzMTUrjMulskHLH6wnv/A+1q5rgEaiuqEjB+oxGXIVZs1FF+R/KPN3ZSQYYg==",
+│         "license": "ISC",
+│         "engines": {
+│           "node": ">=12"
+│         }
+│       },
+│       "node_modules/lucide-react": {
+│         "version": "0.525.0",
+│         "resolved": "https://registry.npmjs.org/lucide-react/-/lucide-react-0.525.0.tgz",
+│         "integrity": "sha512-Tm1txJ2OkymCGkvwoHt33Y2JpN5xucVq1slHcgE6Lk0WjDfjgKWor5CdVER8U6DvcfMwh4M8XxmpTiyzfmfDYQ==",
+│         "license": "ISC",
+│         "peerDependencies": {
+│           "react": "^16.5.1 || ^17.0.0 || ^18.0.0 || ^19.0.0"
+│         }
+│       },
+│       "node_modules/nanoid": {
+│         "version": "3.3.11",
+│         "resolved": "https://registry.npmjs.org/nanoid/-/nanoid-3.3.11.tgz",
+│         "integrity": "sha512-N8SpfPUnUp1bK+PMYW8qSWdl9U+wwNWI4QKxOYDy9JAro3WMX7p2OeVRF9v+347pnakNevPmiHhNmZ2HbFA76w==",
+│         "dev": true,
+│         "funding": [
+│           {
+│             "type": "github",
+│             "url": "https://github.com/sponsors/ai"
+│           }
+│         ],
+│         "license": "MIT",
+│         "bin": {
+│           "nanoid": "bin/nanoid.cjs"
+│         },
+│         "engines": {
+│           "node": "^10 || ^12 || ^13.7 || ^14 || >=15.0.1"
+│         }
+│       },
+│       "node_modules/picocolors": {
+│         "version": "1.1.1",
+│         "resolved": "https://registry.npmjs.org/picocolors/-/picocolors-1.1.1.tgz",
+│         "integrity": "sha512-xceH2snhtb5M9liqDsmEw56le376mTZkEX/jEb/RxNFyegNul7eNslCXP9FDj/Lcu0X8KEyMceP2ntpaHrDEVA==",
+│         "dev": true,
+│         "license": "ISC"
+│       },
+│       "node_modules/picomatch": {
+│         "version": "4.0.2",
+│         "resolved": "https://registry.npmjs.org/picomatch/-/picomatch-4.0.2.tgz",
+│         "integrity": "sha512-M7BAV6Rlcy5u+m6oPhAPFgJTzAioX/6B0DxyvDlo9l8+T3nLKbrczg2WLUyzd45L8RqfUMyGPzekbMvX2Ldkwg==",
+│         "dev": true,
+│         "license": "MIT",
+│         "engines": {
+│           "node": ">=12"
+│         },
+│         "funding": {
+│           "url": "https://github.com/sponsors/jonschlinkert"
+│         }
+│       },
+│       "node_modules/postcss": {
+│         "version": "8.5.6",
+│         "resolved": "https://registry.npmjs.org/postcss/-/postcss-8.5.6.tgz",
+│         "integrity": "sha512-3Ybi1tAuwAP9s0r1UQ2J4n5Y0G05bJkpUIO0/bI9MhwmD70S5aTWbXGBwxHrelT+XM1k6dM0pk+SwNkpTRN7Pg==",
+│         "dev": true,
+│         "funding": [
+│           {
+│             "type": "opencollective",
+│             "url": "https://opencollective.com/postcss/"
+│           },
+│           {
+│             "type": "tidelift",
+│             "url": "https://tidelift.com/funding/github/npm/postcss"
+│           },
+│           {
+│             "type": "github",
+│             "url": "https://github.com/sponsors/ai"
+│           }
+│         ],
+│         "license": "MIT",
+│         "dependencies": {
+│           "nanoid": "^3.3.11",
+│           "picocolors": "^1.1.1",
+│           "source-map-js": "^1.2.1"
+│         },
+│         "engines": {
+│           "node": "^10 || ^12 || >=14"
+│         }
+│       },
+│       "node_modules/react": {
+│         "version": "19.1.0",
+│         "resolved": "https://registry.npmjs.org/react/-/react-19.1.0.tgz",
+│         "integrity": "sha512-FS+XFBNvn3GTAWq26joslQgWNoFu08F4kl0J4CgdNKADkdSGXQyTCnKteIAJy96Br6YbpEU1LSzV5dYtjMkMDg==",
+│         "license": "MIT",
+│         "engines": {
+│           "node": ">=0.10.0"
+│         }
+│       },
+│       "node_modules/react-dom": {
+│         "version": "19.1.0",
+│         "resolved": "https://registry.npmjs.org/react-dom/-/react-dom-19.1.0.tgz",
+│         "integrity": "sha512-Xs1hdnE+DyKgeHJeJznQmYMIBG3TKIHJJT95Q58nHLSrElKlGQqDTR2HQ9fx5CN/Gk6Vh/kupBTDLU11/nDk/g==",
+│         "license": "MIT",
+│         "dependencies": {
+│           "scheduler": "^0.26.0"
+│         },
+│         "peerDependencies": {
+│           "react": "^19.1.0"
+│         }
+│       },
+│       "node_modules/react-is": {
+│         "version": "19.1.0",
+│         "resolved": "https://registry.npmjs.org/react-is/-/react-is-19.1.0.tgz",
+│         "integrity": "sha512-Oe56aUPnkHyyDxxkvqtd7KkdQP5uIUfHxd5XTb3wE9d/kRnZLmKbDB0GWk919tdQ+mxxPtG6EAs6RMT6i1qtHg==",
+│         "license": "MIT",
+│         "peer": true
+│       },
+│       "node_modules/react-redux": {
+│         "version": "9.2.0",
+│         "resolved": "https://registry.npmjs.org/react-redux/-/react-redux-9.2.0.tgz",
+│         "integrity": "sha512-ROY9fvHhwOD9ySfrF0wmvu//bKCQ6AeZZq1nJNtbDC+kk5DuSuNX/n6YWYF/SYy7bSba4D4FSz8DJeKY/S/r+g==",
+│         "license": "MIT",
+│         "dependencies": {
+│           "@types/use-sync-external-store": "^0.0.6",
+│           "use-sync-external-store": "^1.4.0"
+│         },
+│         "peerDependencies": {
+│           "@types/react": "^18.2.25 || ^19",
+│           "react": "^18.0 || ^19",
+│           "redux": "^5.0.0"
+│         },
+│         "peerDependenciesMeta": {
+│           "@types/react": {
+│             "optional": true
+│           },
+│           "redux": {
+│             "optional": true
+│           }
+│         }
+│       },
+│       "node_modules/recharts": {
+│         "version": "3.1.0",
+│         "resolved": "https://registry.npmjs.org/recharts/-/recharts-3.1.0.tgz",
+│         "integrity": "sha512-NqAqQcGBmLrfDs2mHX/bz8jJCQtG2FeXfE0GqpZmIuXIjkpIwj8sd9ad0WyvKiBKPd8ZgNG0hL85c8sFDwascw==",
+│         "license": "MIT",
+│         "dependencies": {
+│           "@reduxjs/toolkit": "1.x.x || 2.x.x",
+│           "clsx": "^2.1.1",
+│           "decimal.js-light": "^2.5.1",
+│           "es-toolkit": "^1.39.3",
+│           "eventemitter3": "^5.0.1",
+│           "immer": "^10.1.1",
+│           "react-redux": "8.x.x || 9.x.x",
+│           "reselect": "5.1.1",
+│           "tiny-invariant": "^1.3.3",
+│           "use-sync-external-store": "^1.2.2",
+│           "victory-vendor": "^37.0.2"
+│         },
+│         "engines": {
+│           "node": ">=18"
+│         },
+│         "peerDependencies": {
+│           "react": "^16.8.0 || ^17.0.0 || ^18.0.0 || ^19.0.0",
+│           "react-dom": "^16.0.0 || ^17.0.0 || ^18.0.0 || ^19.0.0",
+│           "react-is": "^16.8.0 || ^17.0.0 || ^18.0.0 || ^19.0.0"
+│         }
+│       },
+│       "node_modules/redux": {
+│         "version": "5.0.1",
+│         "resolved": "https://registry.npmjs.org/redux/-/redux-5.0.1.tgz",
+│         "integrity": "sha512-M9/ELqF6fy8FwmkpnF0S3YKOqMyoWJ4+CS5Efg2ct3oY9daQvd/Pc71FpGZsVsbl3Cpb+IIcjBDUnnyBdQbq4w==",
+│         "license": "MIT"
+│       },
+│       "node_modules/redux-thunk": {
+│         "version": "3.1.0",
+│         "resolved": "https://registry.npmjs.org/redux-thunk/-/redux-thunk-3.1.0.tgz",
+│         "integrity": "sha512-NW2r5T6ksUKXCabzhL9z+h206HQw/NJkcLm1GPImRQ8IzfXwRGqjVhKJGauHirT0DAuyy6hjdnMZaRoAcy0Klw==",
+│         "license": "MIT",
+│         "peerDependencies": {
+│           "redux": "^5.0.0"
+│         }
+│       },
+│       "node_modules/reselect": {
+│         "version": "5.1.1",
+│         "resolved": "https://registry.npmjs.org/reselect/-/reselect-5.1.1.tgz",
+│         "integrity": "sha512-K/BG6eIky/SBpzfHZv/dd+9JBFiS4SWV7FIujVyJRux6e45+73RaUHXLmIR1f7WOMaQ0U1km6qwklRQxpJJY0w==",
+│         "license": "MIT"
+│       },
+│       "node_modules/rollup": {
+│         "version": "4.45.0",
+│         "resolved": "https://registry.npmjs.org/rollup/-/rollup-4.45.0.tgz",
+│         "integrity": "sha512-WLjEcJRIo7i3WDDgOIJqVI2d+lAC3EwvOGy+Xfq6hs+GQuAA4Di/H72xmXkOhrIWFg2PFYSKZYfH0f4vfKXN4A==",
+│         "dev": true,
+│         "license": "MIT",
+│         "dependencies": {
+│           "@types/estree": "1.0.8"
+│         },
+│         "bin": {
+│           "rollup": "dist/bin/rollup"
+│         },
+│         "engines": {
+│           "node": ">=18.0.0",
+│           "npm": ">=8.0.0"
+│         },
+│         "optionalDependencies": {
+│           "@rollup/rollup-android-arm-eabi": "4.45.0",
+│           "@rollup/rollup-android-arm64": "4.45.0",
+│           "@rollup/rollup-darwin-arm64": "4.45.0",
+│           "@rollup/rollup-darwin-x64": "4.45.0",
+│           "@rollup/rollup-freebsd-arm64": "4.45.0",
+│           "@rollup/rollup-freebsd-x64": "4.45.0",
+│           "@rollup/rollup-linux-arm-gnueabihf": "4.45.0",
+│           "@rollup/rollup-linux-arm-musleabihf": "4.45.0",
+│           "@rollup/rollup-linux-arm64-gnu": "4.45.0",
+│           "@rollup/rollup-linux-arm64-musl": "4.45.0",
+│           "@rollup/rollup-linux-loongarch64-gnu": "4.45.0",
+│           "@rollup/rollup-linux-powerpc64le-gnu": "4.45.0",
+│           "@rollup/rollup-linux-riscv64-gnu": "4.45.0",
+│           "@rollup/rollup-linux-riscv64-musl": "4.45.0",
+│           "@rollup/rollup-linux-s390x-gnu": "4.45.0",
+│           "@rollup/rollup-linux-x64-gnu": "4.45.0",
+│           "@rollup/rollup-linux-x64-musl": "4.45.0",
+│           "@rollup/rollup-win32-arm64-msvc": "4.45.0",
+│           "@rollup/rollup-win32-ia32-msvc": "4.45.0",
+│           "@rollup/rollup-win32-x64-msvc": "4.45.0",
+│           "fsevents": "~2.3.2"
+│         }
+│       },
+│       "node_modules/scheduler": {
+│         "version": "0.26.0",
+│         "resolved": "https://registry.npmjs.org/scheduler/-/scheduler-0.26.0.tgz",
+│         "integrity": "sha512-NlHwttCI/l5gCPR3D1nNXtWABUmBwvZpEQiD4IXSbIDq8BzLIK/7Ir5gTFSGZDUu37K5cMNp0hFtzO38sC7gWA==",
+│         "license": "MIT"
+│       },
+│       "node_modules/source-map-js": {
+│         "version": "1.2.1",
+│         "resolved": "https://registry.npmjs.org/source-map-js/-/source-map-js-1.2.1.tgz",
+│         "integrity": "sha512-UXWMKhLOwVKb728IUtQPXxfYU+usdybtUrK/8uGE8CQMvrhOpwvzDBwj0QhSL7MQc7vIsISBG8VQ8+IDQxpfQA==",
+│         "dev": true,
+│         "license": "BSD-3-Clause",
+│         "engines": {
+│           "node": ">=0.10.0"
+│         }
+│       },
+│       "node_modules/tiny-invariant": {
+│         "version": "1.3.3",
+│         "resolved": "https://registry.npmjs.org/tiny-invariant/-/tiny-invariant-1.3.3.tgz",
+│         "integrity": "sha512-+FbBPE1o9QAYvviau/qC5SE3caw21q3xkvWKBtja5vgqOWIHHJ3ioaq1VPfn/Szqctz2bU/oYeKd9/z5BL+PVg==",
+│         "license": "MIT"
+│       },
+│       "node_modules/tinyglobby": {
+│         "version": "0.2.14",
+│         "resolved": "https://registry.npmjs.org/tinyglobby/-/tinyglobby-0.2.14.tgz",
+│         "integrity": "sha512-tX5e7OM1HnYr2+a2C/4V0htOcSQcoSTH9KgJnVvNm5zm/cyEWKJ7j7YutsH9CxMdtOkkLFy2AHrMci9IM8IPZQ==",
+│         "dev": true,
+│         "license": "MIT",
+│         "dependencies": {
+│           "fdir": "^6.4.4",
+│           "picomatch": "^4.0.2"
+│         },
+│         "engines": {
+│           "node": ">=12.0.0"
+│         },
+│         "funding": {
+│           "url": "https://github.com/sponsors/SuperchupuDev"
+│         }
+│       },
+│       "node_modules/typescript": {
+│         "version": "5.7.3",
+│         "resolved": "https://registry.npmjs.org/typescript/-/typescript-5.7.3.tgz",
+│         "integrity": "sha512-84MVSjMEHP+FQRPy3pX9sTVV/INIex71s9TL2Gm5FG/WG1SqXeKyZ0k7/blY/4FdOzI12CBy1vGc4og/eus0fw==",
+│         "dev": true,
+│         "license": "Apache-2.0",
+│         "bin": {
+│           "tsc": "bin/tsc",
+│           "tsserver": "bin/tsserver"
+│         },
+│         "engines": {
+│           "node": ">=14.17"
+│         }
+│       },
+│       "node_modules/undici-types": {
+│         "version": "6.21.0",
+│         "resolved": "https://registry.npmjs.org/undici-types/-/undici-types-6.21.0.tgz",
+│         "integrity": "sha512-iwDZqg0QAGrg9Rav5H4n0M64c3mkR59cJ6wQp+7C4nI0gsmExaedaYLNO44eT4AtBBwjbTiGPMlt2Md0T9H9JQ==",
+│         "dev": true,
+│         "license": "MIT"
+│       },
+│       "node_modules/use-sync-external-store": {
+│         "version": "1.5.0",
+│         "resolved": "https://registry.npmjs.org/use-sync-external-store/-/use-sync-external-store-1.5.0.tgz",
+│         "integrity": "sha512-Rb46I4cGGVBmjamjphe8L/UnvJD+uPPtTkNvX5mZgqdbavhI4EbgIWJiIHXJ8bc/i9EQGPRh4DwEURJ552Do0A==",
+│         "license": "MIT",
+│         "peerDependencies": {
+│           "react": "^16.8.0 || ^17.0.0 || ^18.0.0 || ^19.0.0"
+│         }
+│       },
+│       "node_modules/victory-vendor": {
+│         "version": "37.3.6",
+│         "resolved": "https://registry.npmjs.org/victory-vendor/-/victory-vendor-37.3.6.tgz",
+│         "integrity": "sha512-SbPDPdDBYp+5MJHhBCAyI7wKM3d5ivekigc2Dk2s7pgbZ9wIgIBYGVw4zGHBml/qTFbexrofXW6Gu4noGxrOwQ==",
+│         "license": "MIT AND ISC",
+│         "dependencies": {
+│           "@types/d3-array": "^3.0.3",
+│           "@types/d3-ease": "^3.0.0",
+│           "@types/d3-interpolate": "^3.0.1",
+│           "@types/d3-scale": "^4.0.2",
+│           "@types/d3-shape": "^3.1.0",
+│           "@types/d3-time": "^3.0.0",
+│           "@types/d3-timer": "^3.0.0",
+│           "d3-array": "^3.1.6",
+│           "d3-ease": "^3.0.1",
+│           "d3-interpolate": "^3.0.1",
+│           "d3-scale": "^4.0.2",
+│           "d3-shape": "^3.1.0",
+│           "d3-time": "^3.0.0",
+│           "d3-timer": "^3.0.1"
+│         }
+│       },
+│       "node_modules/vite": {
+│         "version": "6.3.5",
+│         "resolved": "https://registry.npmjs.org/vite/-/vite-6.3.5.tgz",
+│         "integrity": "sha512-cZn6NDFE7wdTpINgs++ZJ4N49W2vRp8LCKrn3Ob1kYNtOo21vfDoaV5GzBfLU4MovSAB8uNRm4jgzVQZ+mBzPQ==",
+│         "dev": true,
+│         "license": "MIT",
+│         "dependencies": {
+│           "esbuild": "^0.25.0",
+│           "fdir": "^6.4.4",
+│           "picomatch": "^4.0.2",
+│           "postcss": "^8.5.3",
+│           "rollup": "^4.34.9",
+│           "tinyglobby": "^0.2.13"
+│         },
+│         "bin": {
+│           "vite": "bin/vite.js"
+│         },
+│         "engines": {
+│           "node": "^18.0.0 || ^20.0.0 || >=22.0.0"
+│         },
+│         "funding": {
+│           "url": "https://github.com/vitejs/vite?sponsor=1"
+│         },
+│         "optionalDependencies": {
+│           "fsevents": "~2.3.3"
+│         },
+│         "peerDependencies": {
+│           "@types/node": "^18.0.0 || ^20.0.0 || >=22.0.0",
+│           "jiti": ">=1.21.0",
+│           "less": "*",
+│           "lightningcss": "^1.21.0",
+│           "sass": "*",
+│           "sass-embedded": "*",
+│           "stylus": "*",
+│           "sugarss": "*",
+│           "terser": "^5.16.0",
+│           "tsx": "^4.8.1",
+│           "yaml": "^2.4.2"
+│         },
+│         "peerDependenciesMeta": {
+│           "@types/node": {
+│             "optional": true
+│           },
+│           "jiti": {
+│             "optional": true
+│           },
+│           "less": {
+│             "optional": true
+│           },
+│           "lightningcss": {
+│             "optional": true
+│           },
+│           "sass": {
+│             "optional": true
+│           },
+│           "sass-embedded": {
+│             "optional": true
+│           },
+│           "stylus": {
+│             "optional": true
+│           },
+│           "sugarss": {
+│             "optional": true
+│           },
+│           "terser": {
+│             "optional": true
+│           },
+│           "tsx": {
+│             "optional": true
+│           },
+│           "yaml": {
+│             "optional": true
+│           }
+│         }
+│       }
+│     }
+│   }
+├── package.json
+│   {
+│     "name": "intelligent-vibration-analyzer",
+│     "private": true,
+│     "version": "0.0.0",
+│     "type": "module",
+│     "scripts": {
+│       "dev": "vite",
+│       "build": "vite build",
+│       "preview": "vite preview"
+│     },
+│     "dependencies": {
+│       "@google/genai": "^0.15.0",
+│       "react-dom": "^19.1.0",
+│       "react": "^19.1.0",
+│       "lucide-react": "^0.525.0",
+│       "recharts": "^3.1.0",
+│       "p5": "^2.0.3",
+│       "leaflet": "^1.9.4",
+│       "react-leaflet": "^4.2.1"
+│     },
+│     "devDependencies": {
+│       "@types/node": "^22.14.0",
+│       "@types/leaflet": "^1.9.12",
+│       "typescript": "~5.7.2",
+│       "vite": "^6.2.0"
+│     }
+│   }
+├── services/
+│   ├── analyzer.ts
+│   │   import type { VibrationAnalysisResult, SummaryData, VibrationRecord, VibrationPointStatus, VibrationPointDetail } from '../types';
+│   │   import { calculateSlopeAndAspect } from './terrainService';
+│   │   
+│   │   export const getNumericId = (vibroId: string): number => {
+│   │       const match = vibroId.match(/\d+/);
+│   │       return match ? parseInt(match[0], 10) : 0;
+│   │   };
+│   │   
+│   │   const formatDuration = (totalSeconds: number): string => {
+│   │       const hours = Math.floor(totalSeconds / 3600);
+│   │       const minutes = Math.floor((totalSeconds % 3600) / 60);
+│   │       return `${String(hours).padStart(2, '0')}h ${String(minutes).padStart(2, '0')}m`;
+│   │   };
+│   │   
+│   │   export const formatDurationForStatsLabel = (totalSeconds: number): string => {
+│   │       if (totalSeconds < 60) return `${Math.round(totalSeconds)}s`;
+│   │       const hours = Math.floor(totalSeconds / 3600);
+│   │       const minutes = Math.floor((totalSeconds % 3600) / 60);
+│   │       if (hours > 0) {
+│   │           return `${hours}h${minutes}m`;
+│   │       }
+│   │       return `${minutes}m`;
+│   │   };
+│   │   
+│   │   export const formatDurationForTooltip = (totalSeconds: number): string => {
+│   │       if (isNaN(totalSeconds) || totalSeconds < 0) return '0h00m';
+│   │       const hours = Math.floor(totalSeconds / 3600);
+│   │       const minutes = Math.floor((totalSeconds % 3600) / 60);
+│   │       return `${hours}h${String(minutes).padStart(2, '0')}m`;
+│   │   };
+│   │   
+│   │   // VAPS Parser
+│   │   const fieldDefinitions: { name: keyof VibrationRecord, start: number, end: number, type: 'string' | 'integer' | 'float' }[] = [
+│   │     { name: 'recordIdentification', start: 0, end: 1, type: 'string' },
+│   │     { name: 'lineName', start: 1, end: 17, type: 'string' },
+│   │     { name: 'pointNumber', start: 17, end: 25, type: 'string' },
+│   │     { name: 'pointIndex', start: 25, end: 26, type: 'integer' },
+│   │     { name: 'fleetNumber', start: 26, end: 27, type: 'string' },
+│   │     { name: 'vibratorNumber', start: 27, end: 29, type: 'integer' },
+│   │     { name: 'vibratorDriveLevel', start: 29, end: 32, type: 'integer' },
+│   │     { name: 'averagePhase', start: 32, end: 36, type: 'integer' },
+│   │     { name: 'peakPhase', start: 36, end: 40, type: 'integer' },
+│   │     { name: 'averageDistortion', start: 40, end: 42, type: 'integer' },
+│   │     { name: 'peakDistortion', start: 42, end: 44, type: 'integer' },
+│   │     { name: 'averageForce', start: 44, end: 46, type: 'integer' },
+│   │     { name: 'peakForce', start: 46, end: 49, type: 'integer' },
+│   │     { name: 'averageGroundStiffness', start: 49, end: 52, type: 'integer' },
+│   │     { name: 'averageGroundViscosity', start: 52, end: 55, type: 'integer' },
+│   │     { name: 'vibPositionEasting', start: 55, end: 64, type: 'float' },
+│   │     { name: 'vibPositionNorthing', start: 64, end: 74, type: 'float' },
+│   │     { name: 'vibPositionElevation', start: 74, end: 80, type: 'float' },
+│   │     { name: 'shotNb', start: 81, end: 86, type: 'integer' },
+│   │     { name: 'acquisitionNb', start: 86, end: 88, type: 'integer' },
+│   │     { name: 'twoDigitsFleetNumber', start: 88, end: 90, type: 'integer' },
+│   │     { name: 'vibStatusCode', start: 90, end: 92, type: 'integer' },
+│   │     { name: 'mass1Warning', start: 93, end: 94,
